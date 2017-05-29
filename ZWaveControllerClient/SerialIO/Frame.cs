@@ -33,31 +33,33 @@ namespace ZWaveControllerClient.SerialIO
 
         public Frame(byte[] frameData)
         {
-            // todo: throw exception if invalid checksum ?
-            Timestamp = DateTime.Now;
-            Header = (FrameHeader)frameData[0];
+			Timestamp = DateTime.Now;
+			Payload = new byte[] { };
+
+            if (frameData.Length > 0) {
+                Header = (FrameHeader)frameData[0];
+            }
 
             if (Header == FrameHeader.StartOfFrame)
             {
-                var frameLength = frameData[1];
-                var payloadLength = frameLength - 3;
+                if (frameData.Length > 1)
+				{
+					var frameLength = frameData[1];
+					var payloadLength = frameLength - 3;
 
-                if (frameData.Length > 4)
-                {
-                    Type = (FrameType)frameData[2];
-                    Function = (ZWaveFunction)frameData[3];
+					if (frameData.Length > 4)
+					{
+						Type = (FrameType)frameData[2];
+						Function = (ZWaveFunction)frameData[3];
+					}
+
+					Payload = frameData
+						.Skip(4)
+						.Take(payloadLength)
+						.ToArray();
+
+					Checksum = frameData[frameData.Length - 1];
                 }
-
-                Payload = frameData
-                    .Skip(4)
-                    .Take(payloadLength)
-                    .ToArray();
-
-                Checksum = frameData[frameData.Length - 1];
-            }
-            else
-            {
-                Payload = new byte[] { };
             }
         }
 

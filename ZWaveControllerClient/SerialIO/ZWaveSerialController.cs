@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using ZWaveControllerClient.CommandClasses;
 using ZWaveControllerClient.Xml;
@@ -19,7 +20,8 @@ namespace ZWaveControllerClient.SerialIO
         private ILogger _logger;
         private ZWaveClasses _zwClasses;
         private ZWaveClassesXmlParser _zwaveXmlParser;
-        private readonly Queue<TaskCompletionSource<Frame>> _sendTasks = new Queue<TaskCompletionSource<Frame>>();
+		private readonly Queue<TaskCompletionSource<Frame>> _sendTasks = new Queue<TaskCompletionSource<Frame>>();
+		private byte[] _dataReceivedBuffer = { };
 
         private List<ZWaveNode> _nodes = new List<ZWaveNode>();
 
@@ -52,8 +54,52 @@ namespace ZWaveControllerClient.SerialIO
         }
 
         private void _serialPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
+		{
+			var frameDataLength = _serialPort.BytesToRead;
+            if (frameDataLength > 0)
+            {
+                var frameData = new byte[frameDataLength];
+
+                while (_serialPort.Read(frameData, 0, frameDataLength) <= 0) {}
+
+                _logger.LogInformation($"{DateTime.Now} Recv bytes: {string.Concat(frameData.Select(b => b.ToString("x02")))}");
+                _dataReceivedBuffer = _dataReceivedBuffer.Concat(frameData).ToArray();
+            }
+
+            var frames = CollectFrames();
+            if (frames.Count > 0)
+			{
+				ProcessFrames(frames);                
+            }
+        }
+
+        public IReadOnlyCollection<Frame> CollectFrames()
         {
-            Receive();
+            var frames = new List<Frame>();
+            while (_dataReceivedBuffer.Length > 0)
+            {
+				var responseFrame = new Frame(_dataReceivedBuffer);
+
+				var frameLength = responseFrame.Length;
+				if (responseFrame.Header == FrameHeader.StartOfFrame)
+				{
+					frameLength += 2;
+				}
+
+                if (_dataReceivedBuffer.Length < frameLength)
+                {
+                    // need to wait until more data arrives
+                    break;
+                }
+
+                _logger.LogInformation($"{DateTime.Now} Recv frame: {responseFrame}");
+
+                _dataReceivedBuffer = _dataReceivedBuffer.Skip(frameLength).ToArray();
+
+                frames.Add(responseFrame);
+            }
+
+            return frames;
         }
 
         public void Connect()
@@ -113,92 +159,70 @@ namespace ZWaveControllerClient.SerialIO
         {
              return DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_SEND_DATA, 
                 new byte[] { node.Id, commandClass.Key }
-                .Union(bytes)
-                .Union(new byte[] { 0x01 | 0x04, 0x00 }).ToArray()));
+                .Concat(bytes)
+                .Concat(new byte[] { 0x01 | 0x04, 0x00 }).ToArray()));
         }
 
         public Task<Frame> SendCommand(ZWaveNode node, CommandClass commandClass, Command commandClassParameter, params byte[] values)
         {
             return DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_SEND_DATA,
                 new byte[] { node.Id, commandClass.Key, commandClassParameter.Key }
-                .Union(values)
-                .Union(new byte[] { 0x01 | 0x04, 0x00 }).ToArray()));
+                .Concat(values)
+                .Concat(new byte[] { 0x01 | 0x04, 0x00 }).ToArray()));
         }
 
-        private void Receive()
+        private void ProcessFrames(IEnumerable<Frame> responseFrames)
         {
             try
             {
-                var frameDataLength = _serialPort.BytesToRead;
-                if (frameDataLength > 0)
+                Frame solicitedResponseFrame = null;
+                TaskCompletionSource<Frame> lastSendTask = null;
+                Frame lastRequestFrame = null;
+
+                if (_sendTasks.Count > 0)
                 {
-                    byte[] frameData = new byte[frameDataLength];
+                    lastSendTask = _sendTasks.Peek();
+                    lastRequestFrame = (Frame)lastSendTask.Task.AsyncState;
+                }
 
-                    while (_serialPort.Read(frameData, 0, frameDataLength) <= 0) ;
-
-                    var responseFrames = new List<Frame>();
-
-                    _logger.LogInformation($"{DateTime.Now} Recv bytes: {string.Concat(frameData.Select(b => b.ToString("x02")))}");
-                    byte[] dataLeft = frameData;
-                    while (dataLeft.Length > 0)
+                foreach (var responseFrame in responseFrames)
+                {
+                    if (responseFrame.Header == FrameHeader.StartOfFrame)
                     {
-                        var responseFrame = new Frame(dataLeft);
-                        _logger.LogInformation($"{DateTime.Now} Recv frame: {responseFrame}");
-                        responseFrames.Add(responseFrame);
+                        ProcessReceivedFrame(responseFrame);
 
-                        var frameLength = responseFrame.Length;
-                        if (responseFrame.Header == FrameHeader.StartOfFrame)
-                        {
-                            frameLength += 2;
-                        }
-
-                        dataLeft = dataLeft.Skip(frameLength).ToArray();
-                    }
-
-                    Frame solicitedResponseFrame = null;
-                    TaskCompletionSource<Frame> lastSendTask = null;
-                    Frame lastRequestFrame = null;
-
-                    if (_sendTasks.Count > 0)
-                    {
-                        lastSendTask = _sendTasks.Peek();
-                        lastRequestFrame = (Frame)lastSendTask.Task.AsyncState;
-                    }
-
-                    foreach (var responseFrame in responseFrames)
-                    {
-                        if (responseFrame.Header == FrameHeader.StartOfFrame)
-                        {
-                            ProcessReceivedFrame(responseFrame);
-                            if (lastRequestFrame?.Function == responseFrame.Function &&
-                                solicitedResponseFrame == null)
-                            {
-                                solicitedResponseFrame = responseFrame;
-                            }
-                        }
-                        else
-                        {
-                            if (responseFrame.Header == FrameHeader.Cancelled)
-                            {
+                        if (lastRequestFrame?.Function == responseFrame.Function &&
+                            solicitedResponseFrame == null)
+						{
+                            if (responseFrame.IsChecksumValid == false){
                                 var sendTask = _sendTasks.Dequeue();
                                 sendTask.SetCanceled();
-                                _logger.LogError("cancelled");
                             }
-                            else if (responseFrame.Header == FrameHeader.NotAcknowledged)
-                            {
-                                var sendTask = _sendTasks.Dequeue();
-                                sendTask.SetCanceled();
-                                _logger.LogError("not acknowledged");
-                            }
+                            solicitedResponseFrame = responseFrame;
                         }
                     }
-
-                    if (solicitedResponseFrame != null)
+                    else
                     {
-                        _sendTasks.Dequeue();
-                        _logger.LogInformation($"Set result for {lastRequestFrame}");
-                        lastSendTask.SetResult(solicitedResponseFrame);
+                        if (responseFrame.Header == FrameHeader.Cancelled)
+                        {
+                            var sendTask = _sendTasks.Dequeue();
+                            sendTask.SetCanceled();
+                            _logger.LogError("cancelled");
+                        }
+                        else if (responseFrame.Header == FrameHeader.NotAcknowledged)
+                        {
+                            var sendTask = _sendTasks.Dequeue();
+                            sendTask.SetCanceled();
+                            _logger.LogError("not acknowledged");
+                        }
                     }
+                }
+
+                if (solicitedResponseFrame != null)
+                {
+                    _sendTasks.Dequeue();
+                    _logger.LogInformation($"Set result for {lastRequestFrame}");
+                    lastSendTask.SetResult(solicitedResponseFrame);
                 }
             }
             catch (Exception e)

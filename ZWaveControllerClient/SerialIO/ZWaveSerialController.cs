@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using ZWaveControllerClient.CommandClasses;
 using ZWaveControllerClient.Xml;
@@ -245,34 +244,39 @@ namespace ZWaveControllerClient.SerialIO
                 return;
             }
 
-            FrameReceived?.Invoke(this, new FrameEventArgs { Frame = responseFrame });
-
             switch (responseFrame.Function)
             {
                 case ZWaveFunction.FUNC_ID_ZW_APPLICATION_UPDATE:
-                    var status = (ApplicationUpdateStatus)responseFrame.Payload[0];
-
-                    if (status == ApplicationUpdateStatus.NODE_INFO_REQ_FAILED)
-                    {
-                        _logger.LogError("failed to get node status");
-                        break;
-                    }
-
-                    var nodeId = responseFrame.Payload[1];
-                    var znode = _nodes.Single(n => n.Id == nodeId);
-                    znode.UpdateStatus = status;
-                    if (status == ApplicationUpdateStatus.NODE_INFO_RECEIVED)
-                    {
-                        var nifLength = responseFrame.Payload[2];
-                        if (nifLength > 0)
-                        {
-                            var nodeInfo = responseFrame.Payload.Skip(3).Take(nifLength).ToArray();
-
-                            znode.SupportedCommandClasses = nodeInfo.SelectMany(key => _zwClasses.CommandClasses.Where(c => c.Key == key)).ToList();
-                            _logger.LogInformation($"Node: {znode} - Command Classes: {string.Join(", ", znode.SupportedCommandClasses.Select(cc => cc.ToString()))}");
-                        }
-                    }
+                    HandleApplicationUpdate(responseFrame);
                     break;
+            }
+
+            FrameReceived?.Invoke(this, new FrameEventArgs { Frame = responseFrame });
+        }
+
+        private void HandleApplicationUpdate(Frame responseFrame)
+        {
+            var status = (ApplicationUpdateStatus)responseFrame.Payload[0];
+
+            if (status == ApplicationUpdateStatus.NODE_INFO_REQ_FAILED)
+            {
+                _logger.LogError("failed to get node status");
+                return;
+            }
+
+            var nodeId = responseFrame.Payload[1];
+            var znode = _nodes.Single(n => n.Id == nodeId);
+            znode.UpdateStatus = status;
+            if (status == ApplicationUpdateStatus.NODE_INFO_RECEIVED)
+            {
+                var nifLength = responseFrame.Payload[2];
+                if (nifLength > 0)
+                {
+                    var nodeInfo = responseFrame.Payload.Skip(3).Take(nifLength).ToArray();
+
+                    znode.SupportedCommandClasses = nodeInfo.SelectMany(key => _zwClasses.CommandClasses.Where(c => c.Key == key)).ToList();
+                    _logger.LogInformation($"Node: {znode} - Command Classes: {string.Join(", ", znode.SupportedCommandClasses.Select(cc => cc.ToString()))}");
+                }
             }
         }
 

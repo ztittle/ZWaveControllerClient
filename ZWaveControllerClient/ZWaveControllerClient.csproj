@@ -5,7 +5,7 @@
     <Description>This library exposes a .NET API to interact with Serial-based Z-Wave Controllers. 
 It may be used in any .NET project supporting the .NET Standard 1.5 and above. 
 This class library is based off the Z-Wave Public Specification.</Description>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <PackageRequireLicenseAcceptance>False</PackageRequireLicenseAcceptance>
     <Copyright>Zandt Tittle</Copyright>
     <PackageLicenseUrl>https://opensource.org/licenses/MIT</PackageLicenseUrl>
@@ -20,7 +20,9 @@ This class library is based off the Z-Wave Public Specification.</Description>
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="Xml\ZWave_custom_cmd_classes.xml" />
+    <Content Include="Xml\ZWave_custom_cmd_classes.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

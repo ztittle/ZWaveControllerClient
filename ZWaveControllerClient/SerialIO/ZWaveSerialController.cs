@@ -148,25 +148,11 @@ namespace ZWaveControllerClient.SerialIO
             _serialPort.Flush();
         }
 
-        public Task<Frame> SendCommand(ZWaveNode node, CommandClass commandClass, Command command)
-        {
-            return DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_SEND_DATA, 
-                 node.Id, commandClass.Key, command.Key, 0x01 | 0x04, 0x00));
-        }
-
-        public Task<Frame> SendCommand(ZWaveNode node, CommandClass commandClass, params byte[] bytes)
+        public Task<Frame> SendCommand(ZWaveNode node, CommandClass commandClass, Command command, params byte[] bytes)
         {
              return DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_SEND_DATA, 
-                new byte[] { node.Id, commandClass.Key }
+                new byte[] { node.Id, (byte)(bytes.Length + 2), commandClass.Key, command.Key }
                 .Concat(bytes)
-                .Concat(new byte[] { 0x01 | 0x04, 0x00 }).ToArray()));
-        }
-
-        public Task<Frame> SendCommand(ZWaveNode node, CommandClass commandClass, Command commandClassParameter, params byte[] values)
-        {
-            return DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_SEND_DATA,
-                new byte[] { node.Id, commandClass.Key, commandClassParameter.Key }
-                .Concat(values)
                 .Concat(new byte[] { 0x01 | 0x04, 0x00 }).ToArray()));
         }
 

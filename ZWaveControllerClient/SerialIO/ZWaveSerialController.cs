@@ -34,6 +34,20 @@ namespace ZWaveControllerClient.SerialIO
         public byte SerialApiVersion { get; private set; }
         public bool IsSlaveApi { get; private set; }
 
+        private byte _sequenceNumber = 1;
+        public byte SequenceNumber
+        {
+            get => _sequenceNumber;
+            private set
+            {
+                if (value == byte.MinValue || value == sbyte.MaxValue)
+                {
+                    _sequenceNumber = 1;
+                }
+                else _sequenceNumber = value;
+            }
+        }
+
         private object _locker = new object();
 
         public ZWaveSerialController(string portName, ILogger logger)
@@ -148,12 +162,12 @@ namespace ZWaveControllerClient.SerialIO
             _serialPort.Flush();
         }
 
-        public Task<Frame> SendCommand(ZWaveNode node, CommandClass commandClass, Command command, params byte[] bytes)
+        public Task<Frame> SendCommand(ZWaveNode node, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes)
         {
              return DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_SEND_DATA, 
                 new byte[] { node.Id, (byte)(bytes.Length + 2), commandClass.Key, command.Key }
                 .Concat(bytes)
-                .Concat(new byte[] { 0x01 | 0x04, 0x00 }).ToArray()));
+                .Concat(new byte[] { (byte)(transmitOptions), SequenceNumber++ }).ToArray()));
         }
 
         private void ProcessFrames(IEnumerable<Frame> responseFrames)

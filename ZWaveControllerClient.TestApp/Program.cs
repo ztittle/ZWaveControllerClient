@@ -22,11 +22,11 @@ namespace ZWaveControllerClient.TestApp
 
             var transOptions = TransmitOptions.Acknowledge | TransmitOptions.AutoRoute | TransmitOptions.Explore;
 
-            var response1 = await zwController.SendCommand(lightSwitch, cmdClass, setCmd, transOptions, 99);
+            var setLightOnFrame = await zwController.SendCommand(lightSwitch, cmdClass, setCmd, transOptions, 0);
             var getCmd = cmdClass.Commands.Single(l => l.Name == "SWITCH_MULTILEVEL_GET");
-            await Task.Delay(1000); // todo: how to get rid of delay?
-            var response2 = await zwController.SendCommand(lightSwitch, cmdClass, getCmd, transOptions);
 
+            var getLightStatusFrame = await zwController.SendCommand(lightSwitch, cmdClass, getCmd, transOptions);
+            
         }
 
         private static void ZwController_FrameReceived(object sender, FrameEventArgs e)
@@ -60,7 +60,7 @@ namespace ZWaveControllerClient.TestApp
         {
             public void LogError(string msg, params KeyValuePair<string, object>[] details)
             {
-                Console.WriteLine(msg);
+                Console.WriteLine($"Error: {msg} {{ {string.Join(", ", details.Select(d => $"{d.Key} = {d.Value}"))} }}");
             }
 
             public void LogException(Exception e, string msg = "")
@@ -70,7 +70,7 @@ namespace ZWaveControllerClient.TestApp
 
             public void LogInformation(string msg, params KeyValuePair<string, object>[] details)
             {
-                Console.WriteLine(msg);
+                Console.WriteLine($"Info: {msg} {{ {string.Join(", ", details.Select(d => $"{d.Key} = {d.Value}"))} }}");
             }
         }
     }

@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using ZWaveControllerClient.CommandClasses;
 using ZWaveControllerClient.Xml;
@@ -20,7 +21,7 @@ namespace ZWaveControllerClient.SerialIO
         private ZWaveClasses _zwClasses;
         private ZWaveClassesXmlParser _zwaveXmlParser;
 		private readonly Queue<TaskCompletionSource<Frame>> _sendTasks = new Queue<TaskCompletionSource<Frame>>();
-		private byte[] _dataReceivedBuffer = { };
+        private byte[] _dataReceivedBuffer = { };
 
         private List<ZWaveNode> _nodes = new List<ZWaveNode>();
 
@@ -129,19 +130,35 @@ namespace ZWaveControllerClient.SerialIO
 
         private static Frame Nack = new Frame(FrameType.Request, FrameHeader.NotAcknowledged);
 
-        private const int Timeout = 3000;
+        private const int TimeoutMs = 3000;
 
-        public async Task<Frame> DispatchFrameAsync(Frame frame)
+        public Task<Frame> DispatchFrameAsync(Frame frame)
+        {
+            return DispatchFrameAsync(frame, new CancellationTokenSource(TimeoutMs).Token);
+        }
+
+        public async Task<Frame> DispatchFrameAsync(Frame frame, CancellationToken cancellationToken)
         {
             var tcs = new TaskCompletionSource<Frame>(frame);
+
+            _sendTasks.Enqueue(tcs);
+
+            cancellationToken.Register(state =>
+            {
+                var tcsFromState = (TaskCompletionSource<Frame>)state;
+                if (_sendTasks.Count > 0 && _sendTasks.Peek() == tcsFromState)
+                {
+                    _sendTasks.Dequeue();
+                    tcsFromState.SetCanceled();
+                }
+            }, tcs);
+
             lock (_locker)
             {
-                if (_sendTasks.Count > 0)
+                if (_sendTasks.Count > 1)
                 {
-                    _sendTasks.Peek().Task.Wait(Timeout);
+                    _sendTasks.Peek().Task.Wait();
                 }
-
-                _sendTasks.Enqueue(tcs);
             }
 
             DispatchFrame(frame);
@@ -191,12 +208,9 @@ namespace ZWaveControllerClient.SerialIO
                         ProcessReceivedFrame(responseFrame);
 
                         if (lastRequestFrame?.Function == responseFrame.Function &&
-                            solicitedResponseFrame == null)
-						{
-                            if (responseFrame.IsChecksumValid == false){
-                                var sendTask = _sendTasks.Dequeue();
-                                sendTask.SetCanceled();
-                            }
+                            solicitedResponseFrame == null &&
+                            responseFrame.IsChecksumValid)
+                        {
                             solicitedResponseFrame = responseFrame;
                         }
                     }
@@ -204,15 +218,12 @@ namespace ZWaveControllerClient.SerialIO
                     {
                         if (responseFrame.Header == FrameHeader.Cancelled)
                         {
-                            var sendTask = _sendTasks.Dequeue();
-                            sendTask.SetCanceled();
-                            _logger.LogError("cancelled");
+                            _logger.LogError("Request was cancelled. Waiting for controller to resend.", KeyVal(nameof(lastRequestFrame), lastRequestFrame), KeyVal(nameof(responseFrame), responseFrame));
                         }
                         else if (responseFrame.Header == FrameHeader.NotAcknowledged)
                         {
-                            var sendTask = _sendTasks.Dequeue();
-                            sendTask.SetCanceled();
-                            _logger.LogError("not acknowledged");
+                            // todo: resend
+                            _logger.LogError("Request was not acknowledged.", KeyVal(nameof(lastRequestFrame), lastRequestFrame), KeyVal(nameof(responseFrame), responseFrame));
                         }
                     }
                 }
@@ -220,15 +231,19 @@ namespace ZWaveControllerClient.SerialIO
                 if (solicitedResponseFrame != null)
                 {
                     _sendTasks.Dequeue();
-                    _logger.LogInformation($"Set result for {lastRequestFrame}");
+                    _logger.LogInformation($"Set result for {lastRequestFrame}", KeyVal(nameof(lastRequestFrame), lastRequestFrame));
                     lastSendTask.SetResult(solicitedResponseFrame);
                 }
             }
             catch (Exception e)
             {
-                _logger.LogInformation(e.Message);
                 _logger.LogException(e);
             }
+        }
+
+        private KeyValuePair<string, object> KeyVal(string key, object value)
+        {
+            return new KeyValuePair<string, object>(key, value);
         }
 
         private void ProcessReceivedFrame(Frame responseFrame)
@@ -239,8 +254,8 @@ namespace ZWaveControllerClient.SerialIO
             }
             else
             {
+                _logger.LogError("Checksum failed. Requesting controller to resend.", KeyVal(nameof(responseFrame), responseFrame));
                 DispatchFrame(Nack);
-                _logger.LogError("checksum failed", new KeyValuePair<string, object>("checksum", responseFrame.Checksum));
                 return;
             }
 
@@ -282,7 +297,7 @@ namespace ZWaveControllerClient.SerialIO
 
         private void _serialPort_ErrorReceived(object sender, SerialErrorReceivedEventArgs e)
         {
-            _logger.LogError(e.ToString(), new KeyValuePair<string, object>(nameof(e.EventType), e.EventType));
+            _logger.LogError(e.ToString(), KeyVal(nameof(e.EventType), e.EventType));
         }
         
         private bool disposedValue = false; // To detect redundant calls

@@ -23,6 +23,8 @@ namespace ZWaveControllerClient.SerialIO
 		private readonly Queue<TaskCompletionSource<Frame>> _sendTasks = new Queue<TaskCompletionSource<Frame>>();
         private byte[] _dataReceivedBuffer = { };
         private const int RetryCount = 2;
+        private const int RetryDurationMs = 1100;
+        private const int RequestTimeout = 3000;
 
         private List<ZWaveNode> _nodes = new List<ZWaveNode>();
 
@@ -131,11 +133,9 @@ namespace ZWaveControllerClient.SerialIO
 
         private static Frame Nack = new Frame(FrameType.Request, FrameHeader.NotAcknowledged);
 
-        private const int TimeoutMs = 3000;
-
         public Task<Frame> DispatchFrameAsync(Frame frame)
         {
-            return DispatchFrameAsync(frame, new CancellationTokenSource(TimeoutMs).Token);
+            return DispatchFrameAsync(frame, new CancellationTokenSource(RequestTimeout).Token);
         }
 
         public async Task<Frame> DispatchFrameAsync(Frame frame, CancellationToken cancellationToken)
@@ -179,7 +179,7 @@ namespace ZWaveControllerClient.SerialIO
                     _logger.LogError("Resending frame.", KeyVal(nameof(requestFrame), requestFrame), KeyVal(nameof(_retriesLeft), _retriesLeft));
                     DispatchFrame(requestFrame);
                 }
-            }, frame, 1000, 1000);
+            }, frame, RetryDurationMs, RetryDurationMs);
 
             DispatchFrame(frame);
             

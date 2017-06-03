@@ -201,7 +201,7 @@ namespace ZWaveControllerClient.SerialIO
 
         public Task<Frame> SendCommand(ZWaveNode node, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes)
         {
-             return DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_SEND_DATA, 
+             return DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.SendData, 
                 new byte[] { node.Id, (byte)(bytes.Length + 2), commandClass.Key, command.Key }
                 .Concat(bytes)
                 .Concat(new byte[] { (byte)(transmitOptions), SequenceNumber++ }).ToArray()));
@@ -283,7 +283,7 @@ namespace ZWaveControllerClient.SerialIO
 
             switch (responseFrame.Function)
             {
-                case ZWaveFunction.FUNC_ID_ZW_APPLICATION_UPDATE:
+                case ZWaveFunction.ApplicationUpdate:
                     HandleApplicationUpdate(responseFrame);
                     break;
             }
@@ -295,7 +295,7 @@ namespace ZWaveControllerClient.SerialIO
         {
             var status = (ApplicationUpdateStatus)responseFrame.Payload[0];
 
-            if (status == ApplicationUpdateStatus.NODE_INFO_REQ_FAILED)
+            if (status == ApplicationUpdateStatus.NodeInfoReqFailed)
             {
                 _logger.LogError("failed to get node status", KeyVal(nameof(responseFrame), responseFrame), KeyVal(nameof(status), status));
                 return;
@@ -304,7 +304,7 @@ namespace ZWaveControllerClient.SerialIO
             var nodeId = responseFrame.Payload[1];
             var znode = _nodes.Single(n => n.Id == nodeId);
             znode.UpdateStatus = status;
-            if (status == ApplicationUpdateStatus.NODE_INFO_RECEIVED)
+            if (status == ApplicationUpdateStatus.NodeInfoReceived)
             {
                 var nifLength = responseFrame.Payload[2];
                 if (nifLength > 0)
@@ -348,15 +348,15 @@ namespace ZWaveControllerClient.SerialIO
         {
             _zwClasses = _zwaveXmlParser.Parse(xmlCmdClassesStream);
 
-            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_GET_VERSION));
+            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetVersion));
 
-            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_GET_CONTROLLER_CAPABILITIES));
+            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetControllerCapabilities));
 
-            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_MEMORY_GET_ID));
+            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.MemoryGetId));
 
-            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_GET_SUC_NODE_ID));
+            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetSucNodeId));
 
-            var serialFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_SERIAL_API_GET_INIT_DATA));
+            var serialFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.DiscoveryNodes));
 
             _nodes = new List<ZWaveNode>();
 
@@ -372,7 +372,7 @@ namespace ZWaveControllerClient.SerialIO
             foreach (byte nodeId in nodeIds)
             {
                 _nodes.Add(new ZWaveNode { Id = nodeId });
-                var nodeInfoFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_GET_NODE_PROTOCOL_INFO, nodeId));
+                var nodeInfoFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetNodeProtocolInfo, nodeId));
 
                 var node = _nodes.Single(l => l.Id == nodeId);
                 node.ProtocolInfo.BasicType = _zwClasses.BasicDevices.SingleOrDefault(l => l.Key == nodeInfoFrame.Payload[3]);
@@ -385,7 +385,7 @@ namespace ZWaveControllerClient.SerialIO
 
                 FrameReceivedEventHandler appUpdateHandler = (sender, e) =>
                 {
-                    if (e.Frame.Function == ZWaveFunction.FUNC_ID_ZW_APPLICATION_UPDATE)
+                    if (e.Frame.Function == ZWaveFunction.ApplicationUpdate)
                     {
                         nodeUpdatedEvent.SetResult(0);
                     }
@@ -395,7 +395,7 @@ namespace ZWaveControllerClient.SerialIO
                 {
                     FrameReceived += appUpdateHandler;
 
-                    await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.FUNC_ID_ZW_REQUEST_NODE_INFO, nodeId));
+                    await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.RequestNodeInfo, nodeId));
 
                     await nodeUpdatedEvent.Task;
                 }

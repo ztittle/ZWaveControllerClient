@@ -22,7 +22,7 @@ namespace ZWaveControllerClient
 
         public override string ToString()
         {
-            return ProtocolInfo.SpecificType.ToString();
+            return $"{Id}: {ProtocolInfo.SpecificType}";
         }
     }
 }

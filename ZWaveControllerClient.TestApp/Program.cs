@@ -1,5 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using Microsoft.Extensions.CommandLineUtils;
+using Microsoft.Extensions.Logging;
+using System;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -9,18 +10,14 @@ namespace ZWaveControllerClient.TestApp
 {
     internal class Program
     {
-
-
         static async Task MainAsync(ZWaveSerialController zwController)
         {
-            var xml = File.OpenRead(@"ZWave_custom_cmd_classes.xml");
-            await zwController.Initialize(xml);
             var lightSwitch = zwController.Nodes.First(l => l.ProtocolInfo.SpecificType.Name == "SPECIFIC_TYPE_POWER_SWITCH_MULTILEVEL");
             var cmdClass = lightSwitch.SupportedCommandClasses.First(l => l.Name == "COMMAND_CLASS_SWITCH_MULTILEVEL");
             var setCmd = cmdClass.Commands.Single(l => l.Name == "SWITCH_MULTILEVEL_SET");
             zwController.FrameReceived += ZwController_FrameReceived;
 
-            var transOptions = TransmitOptions.Acknowledge | TransmitOptions.AutoRoute | TransmitOptions.Explore;
+            var transOptions = TransmitOptions.Acknowledge | TransmitOptions.AutoRoute;
 
             var setLightOnFrame = await zwController.SendCommand(lightSwitch, cmdClass, setCmd, transOptions, 0);
             var getCmd = cmdClass.Commands.Single(l => l.Name == "SWITCH_MULTILEVEL_GET");
@@ -33,7 +30,7 @@ namespace ZWaveControllerClient.TestApp
         {
             switch (e.Frame.Function)
             {
-                case ZWaveFunction.FUNC_ID_APPLICATION_COMMAND_HANDLER:
+                case ZWaveFunction.ApplicationCommandHandler:
                     var node = ((ZWaveSerialController)sender).Nodes.Single(l => l.Id == e.Frame.Payload[1]);
                     var cmdClass = node.SupportedCommandClasses.First(l => l.Key == e.Frame.Payload[3]);
                     var cmd = cmdClass.Commands.First(l => l.Key == e.Frame.Payload[4]);
@@ -43,35 +40,52 @@ namespace ZWaveControllerClient.TestApp
             }
         }
 
-        static void Main(string[] args)
+        private enum ExitCodes
         {
-            using (var zwController = new ZWaveSerialController("COM3", new Logger()))
-            {
-                zwController.Connect();
-                MainAsync(zwController).Wait();
-
-                Console.WriteLine();
-                Console.WriteLine("Press enter to end program.");
-                Console.ReadLine();
-            }
+            Success = 0
         }
 
-        private class Logger : ILogger
+        static void Main(string[] args)
         {
-            public void LogError(string msg, params KeyValuePair<string, object>[] details)
-            {
-                Console.WriteLine($"Error: {msg} {{ {string.Join(", ", details.Select(d => $"{d.Key} = {d.Value}"))} }}");
-            }
+            var app = new CommandLineApplication();
+            var xmlConfig = File.OpenRead(@"ZWave_custom_cmd_classes.xml");
 
-            public void LogException(Exception e, string msg = "")
+            app.Command("listnodes", config =>
             {
-                Console.WriteLine(e.Message);
-            }
+                var logLevelOption = config.Option("-loglevel <level>", $"Log levels are [{string.Join(", ", Enum.GetNames(typeof(LogLevel)))}]", CommandOptionType.SingleValue, c => { });
 
-            public void LogInformation(string msg, params KeyValuePair<string, object>[] details)
-            {
-                Console.WriteLine($"Info: {msg} {{ {string.Join(", ", details.Select(d => $"{d.Key} = {d.Value}"))} }}");
-            }
+                config.OnExecute(async () =>
+                 {
+                     if (!Enum.TryParse(logLevelOption.Value(), out LogLevel logLevel))
+                     {
+                         logLevel = LogLevel.None;
+                     }
+
+                     var loggerFactory = new LoggerFactory()
+                        .AddConsole(logLevel);
+
+                     using (var zwController = new ZWaveSerialController("COM3", loggerFactory))
+                     {
+                         zwController.Connect(); 
+
+                         using (xmlConfig)
+                             await zwController.Initialize(xmlConfig);
+
+                         foreach (var node in zwController.Nodes)
+                         {
+                             Console.WriteLine(node);
+                         }
+                     }
+
+                     return (int)ExitCodes.Success;
+                 });
+
+                config.HelpOption("-?|-h|--help");
+            });
+            
+            app.HelpOption("-?|-h|--help");
+
+            app.Execute(args);
         }
     }
 }

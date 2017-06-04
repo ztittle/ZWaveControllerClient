@@ -1,4 +1,5 @@
-﻿using RJCP.IO.Ports;
+﻿using Microsoft.Extensions.Logging;
+using RJCP.IO.Ports;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -54,10 +55,10 @@ namespace ZWaveControllerClient.SerialIO
 
         private object _locker = new object();
 
-        public ZWaveSerialController(string portName, ILogger logger)
+        public ZWaveSerialController(string portName, ILoggerFactory loggerFactory)
         {
             _portName = portName;
-            _logger = logger;
+            _logger = loggerFactory.CreateLogger<ZWaveSerialController>();
             _zwaveXmlParser = new ZWaveClassesXmlParser();
 
             _serialPort = new SerialPortStream(_portName);
@@ -79,7 +80,7 @@ namespace ZWaveControllerClient.SerialIO
 
                 while (_serialPort.Read(frameData, 0, frameDataLength) <= 0) {}
 
-                _logger.LogInformation($"{DateTime.Now} Recv bytes: {string.Concat(frameData.Select(b => b.ToString("x02")))}");
+                _logger.LogInformation(LogEvents.Receive, "Recv bytes: {bytes}", string.Concat(frameData.Select(b => b.ToString("x02"))));
                 _dataReceivedBuffer = _dataReceivedBuffer.Concat(frameData).ToArray();
             }
 
@@ -109,7 +110,7 @@ namespace ZWaveControllerClient.SerialIO
                     break;
                 }
 
-                _logger.LogInformation($"{DateTime.Now} Recv frame: {responseFrame}");
+                _logger.LogInformation(LogEvents.ReceiveFrame, "Recv frame: {responseFrame}", responseFrame);
 
                 _dataReceivedBuffer = _dataReceivedBuffer.Skip(frameLength).ToArray();
 
@@ -176,7 +177,7 @@ namespace ZWaveControllerClient.SerialIO
                 {
                     var requestFrame = (Frame)state;
 
-                    _logger.LogError("Resending frame.", KeyVal(nameof(requestFrame), requestFrame), KeyVal(nameof(_retriesLeft), _retriesLeft));
+                    _logger.LogWarning(LogEvents.RequestFrameRetry, "Resending frame {requestFrame}, retries left: {_retriesLeft}.", requestFrame, _retriesLeft);
                     DispatchFrame(requestFrame);
                 }
             }, frame, RetryDurationMs, RetryDurationMs);
@@ -188,13 +189,13 @@ namespace ZWaveControllerClient.SerialIO
 
         public void DispatchFrame(Frame frame)
         {
-            _logger.LogInformation("Dispatch frame", KeyVal(nameof(frame), frame), KeyVal(nameof(_retriesLeft), _retriesLeft));
+            _logger.LogInformation(LogEvents.DispatchFrame, "Dispatch frame {frame}, retries left: {_retriesLeft}.", frame, _retriesLeft);
             Dispatch(frame.GetData());
         }
 
         public void Dispatch(params byte[] bytes)
         {
-            _logger.LogInformation($"{DateTime.Now} Send bytes: {string.Concat(bytes.Select(b => b.ToString("x02")))}");
+            _logger.LogInformation(LogEvents.Dispatch, "Send bytes: {bytes}", string.Concat(bytes.Select(b => b.ToString("x02"))));
             _serialPort.Write(bytes, 0, bytes.Length);
             _serialPort.Flush();
         }
@@ -239,11 +240,11 @@ namespace ZWaveControllerClient.SerialIO
                     {
                         if (responseFrame.Header == FrameHeader.Cancelled)
                         {
-                            _logger.LogError("Request was cancelled.", KeyVal(nameof(lastRequestFrame), lastRequestFrame), KeyVal(nameof(responseFrame), responseFrame));
+                            _logger.LogWarning(LogEvents.RequestCancelled, "Request was cancelled. Request frame {lastRequestFrame}. Response frame {responseFrame}", lastRequestFrame, responseFrame);
                         }
                         else if (responseFrame.Header == FrameHeader.NotAcknowledged)
                         {
-                            _logger.LogError("Request was not acknowledged.", KeyVal(nameof(lastRequestFrame), lastRequestFrame), KeyVal(nameof(responseFrame), responseFrame));
+                            _logger.LogWarning(LogEvents.RequestNotAcknowledged, "Request was not acknowledged. Request frame {lastRequestFrame}. Response frame {responseFrame}", lastRequestFrame, responseFrame);
                         }
                     }
                 }
@@ -253,19 +254,14 @@ namespace ZWaveControllerClient.SerialIO
                     _retransTimer?.Dispose();
                     _retransTimer = null;
                     _sendTasks.Dequeue();
-                    _logger.LogInformation($"Set result for {lastRequestFrame}", KeyVal(nameof(lastRequestFrame), lastRequestFrame));
+                    _logger.LogInformation(LogEvents.ResponseReceived, "Set result for {lastRequestFrame}", lastRequestFrame);
                     lastSendTask.SetResult(solicitedResponseFrame);
                 }
             }
             catch (Exception e)
             {
-                _logger.LogException(e);
+                _logger.LogCritical(LogEvents.ProcessFramesException, e, e.Message);
             }
-        }
-
-        private KeyValuePair<string, object> KeyVal(string key, object value)
-        {
-            return new KeyValuePair<string, object>(key, value);
         }
 
         private void ProcessReceivedFrame(Frame responseFrame)
@@ -276,7 +272,7 @@ namespace ZWaveControllerClient.SerialIO
             }
             else
             {
-                _logger.LogError("Checksum failed.", KeyVal(nameof(responseFrame), responseFrame));
+                _logger.LogWarning(LogEvents.ProcessReceivedFrameChecksumFailed, "Checksum failed. Response frame {responseFrame}", responseFrame);
                 DispatchFrame(Nack);
                 return;
             }
@@ -297,7 +293,7 @@ namespace ZWaveControllerClient.SerialIO
 
             if (status == ApplicationUpdateStatus.NodeInfoReqFailed)
             {
-                _logger.LogError("failed to get node status", KeyVal(nameof(responseFrame), responseFrame), KeyVal(nameof(status), status));
+                _logger.LogWarning(LogEvents.NodeInfoFailedToGetStatus, "failed to get node status. Response frame {responseFrame}. Status: {status}", responseFrame, status);
                 return;
             }
 
@@ -312,14 +308,14 @@ namespace ZWaveControllerClient.SerialIO
                     var nodeInfo = responseFrame.Payload.Skip(3).Take(nifLength).ToArray();
 
                     znode.SupportedCommandClasses = nodeInfo.SelectMany(key => _zwClasses.CommandClasses.Where(c => c.Key == key)).ToList();
-                    _logger.LogInformation($"Node: {znode} - Command Classes: {string.Join(", ", znode.SupportedCommandClasses.Select(cc => cc.ToString()))}");
+                    _logger.LogInformation(LogEvents.NodeInfoReceived, "Node: {znode} - Command Classes: {cmdClasses}", znode, string.Join(", ", znode.SupportedCommandClasses.Select(cc => cc.ToString())));
                 }
             }
         }
 
         private void _serialPort_ErrorReceived(object sender, SerialErrorReceivedEventArgs e)
         {
-            _logger.LogError(e.ToString(), KeyVal(nameof(e.EventType), e.EventType));
+            _logger.LogError(LogEvents.SerialPortError, "event {e} type {eventType}", e, e.EventType);
         }
         
         private bool disposedValue = false; // To detect redundant calls

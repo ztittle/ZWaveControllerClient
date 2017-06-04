@@ -154,6 +154,14 @@ namespace ZWaveControllerClient.TestApp
             {
                 Console.WriteLine(node);
 
+                Console.WriteLine($"\tReserved: {node.ProtocolInfo.Reserved}");
+
+                Console.WriteLine($"\tSecurity: {node.ProtocolInfo.Security}");
+
+                Console.WriteLine($"\tCapability: {node.ProtocolInfo.Capability}");
+
+                Console.WriteLine($"\tIsListening: {node.ProtocolInfo.IsListening}");
+
                 Console.WriteLine("\tSupported Command Classes");
 
                 if (!node.SupportedCommandClasses.Any())

@@ -468,9 +468,13 @@ namespace ZWaveControllerClient.Serial
         {
             var nodeInfoFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetNodeProtocolInfo, node.Id));
 
-            node.ProtocolInfo.BasicType = _zwClasses.BasicDevices.SingleOrDefault(l => l.Key == nodeInfoFrame.Payload[3]);
-            node.ProtocolInfo.GenericType = _zwClasses.GenericDevices.SingleOrDefault(l => l.Key == nodeInfoFrame.Payload[4]);
-            node.ProtocolInfo.SpecificType = node.ProtocolInfo.GenericType?.SpecificDevices.SingleOrDefault(l => l.Key == nodeInfoFrame.Payload[5]);
+            var payload = nodeInfoFrame.Payload;
+            node.ProtocolInfo.Capability = payload[0];
+            node.ProtocolInfo.Security = payload[1];
+            node.ProtocolInfo.Reserved = payload[2];
+            node.ProtocolInfo.BasicType = _zwClasses.BasicDevices.SingleOrDefault(l => l.Key == payload[3]);
+            node.ProtocolInfo.GenericType = _zwClasses.GenericDevices.SingleOrDefault(l => l.Key == payload[4]);
+            node.ProtocolInfo.SpecificType = node.ProtocolInfo.GenericType?.SpecificDevices.SingleOrDefault(l => l.Key == payload[5]);
 
             // wait until node info was received before querying the next node as the
             // controller will cancel sends if another note info request is made.

@@ -49,36 +49,31 @@ namespace ZWaveControllerClient.TestApp
         {
             var app = new CommandLineApplication();
             var xmlConfig = File.OpenRead(@"ZWave_custom_cmd_classes.xml");
+            var logLevelOption = app.Option("-loglevel <level>", $"Log levels are [{string.Join(", ", Enum.GetNames(typeof(LogLevel)))}]", CommandOptionType.SingleValue);
+            var portOption = app.Option("-port <port>", "The serial port name", CommandOptionType.SingleValue);
 
             app.Command("listnodes", config =>
             {
-                var logLevelOption = config.Option("-loglevel <level>", $"Log levels are [{string.Join(", ", Enum.GetNames(typeof(LogLevel)))}]", CommandOptionType.SingleValue, c => { });
-
                 config.OnExecute(async () =>
-                 {
-                     if (!Enum.TryParse(logLevelOption.Value(), out LogLevel logLevel))
-                     {
-                         logLevel = LogLevel.None;
-                     }
+                {
+                    var loggerFactory = CreateLogFactory(logLevelOption);
+                    var port = portOption.Value();
 
-                     var loggerFactory = new LoggerFactory()
-                        .AddConsole(logLevel);
+                    using (var zwController = new ZWaveSerialController(port, loggerFactory))
+                    {
+                        zwController.Connect();
 
-                     using (var zwController = new ZWaveSerialController("COM3", loggerFactory))
-                     {
-                         zwController.Connect(); 
+                        using (xmlConfig)
+                            await zwController.Initialize(xmlConfig);
 
-                         using (xmlConfig)
-                             await zwController.Initialize(xmlConfig);
+                        foreach (var node in zwController.Nodes)
+                        {
+                            Console.WriteLine(node);
+                        }
+                    }
 
-                         foreach (var node in zwController.Nodes)
-                         {
-                             Console.WriteLine(node);
-                         }
-                     }
-
-                     return (int)ExitCodes.Success;
-                 });
+                    return (int)ExitCodes.Success;
+                });
 
                 config.HelpOption("-?|-h|--help");
             });
@@ -86,6 +81,19 @@ namespace ZWaveControllerClient.TestApp
             app.HelpOption("-?|-h|--help");
 
             app.Execute(args);
+        }
+
+        private static ILoggerFactory CreateLogFactory(CommandOption logLevelOption)
+        {
+            ILoggerFactory loggerFactory;
+            if (!Enum.TryParse(logLevelOption.Value(), true, out LogLevel logLevel))
+            {
+                logLevel = LogLevel.None;
+            }
+
+            loggerFactory = new LoggerFactory()
+               .AddConsole(logLevel);
+            return loggerFactory;
         }
     }
 }

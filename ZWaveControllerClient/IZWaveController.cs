@@ -1,13 +1,40 @@
 ﻿using System;
-using System.IO;
+using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
+using ZWaveControllerClient.CommandClasses;
 
 namespace ZWaveControllerClient
 {
+    public delegate void FrameReceivedEventHandler(object sender, FrameEventArgs e);
     public interface IZWaveController : IDisposable
     {
+        event FrameReceivedEventHandler FrameReceived;
+
+        IReadOnlyList<ZWaveNode> Nodes { get; }
+        ZWaveClasses Classes { get; }
+        byte ChipType { get; }
+        byte ChipRevision { get; }
+        byte SerialApiVersion { get; }
+        bool IsSlaveApi { get; }
+        byte SequenceNumber { get; }
+        ControllerCapabilities Capabilities { get; }
+        ZWaveVersion Version { get; }
+        byte SucNodeId { get; }
+        byte Id { get; }
+        byte[] HomeId { get; }
+
         void Connect();
         void Disconnect();
-        Task Initialize(Stream xmlCmdClassesStream);
+        Task DiscoverNodes();
+        void DispatchFrame(Frame frame);
+        void Dispatch(params byte[] bytes);
+        Task<Frame> DispatchFrameAsync(Frame frame);
+        Task<Frame> DispatchFrameAsync(Frame frame, CancellationToken cancellationToken);
+        Task FetchControllerInfo();
+        Task FetchNodeInfo();
+        Task FetchNodeInfo(ZWaveNode node);
+        Task<Frame> SendCommand(byte nodeId, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes);
+        Task<Frame> SendCommand(ZWaveNode node, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes);
     }
 }

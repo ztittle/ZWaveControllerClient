@@ -1,6 +1,6 @@
 ﻿using Microsoft.Extensions.Logging;
 
-namespace ZWaveControllerClient.SerialIO
+namespace ZWaveControllerClient.Serial
 {
     public class LogEvents
     {

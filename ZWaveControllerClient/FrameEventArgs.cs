@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace ZWaveControllerClient.SerialIO
+namespace ZWaveControllerClient
 { 
     public class FrameEventArgs : EventArgs
     {

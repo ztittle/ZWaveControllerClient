@@ -6,7 +6,7 @@
     public enum ZWaveFunction : byte
     {
         None = 0x00,
-        DiscoveryNodes = 0x02,
+        DiscoverNodes = 0x02,
         SerialApiApplNodeInformation = 0x03,
         ApplicationCommandHandler = 0x04,
         GetControllerCapabilities = 0x05,

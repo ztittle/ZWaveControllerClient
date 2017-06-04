@@ -1,4 +1,4 @@
-﻿namespace ZWaveControllerClient.SerialIO
+﻿namespace ZWaveControllerClient
 {
     public enum FrameType : byte
     {

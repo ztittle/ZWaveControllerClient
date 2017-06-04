@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace ZWaveControllerClient.SerialIO
+namespace ZWaveControllerClient
 {
     /// <summary>
     /// See https://www.itu.int/rec/T-REC-G.9959

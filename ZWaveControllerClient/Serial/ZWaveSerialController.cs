@@ -4,12 +4,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using ZWaveControllerClient.CommandClasses;
 using ZWaveControllerClient.Xml;
 
-namespace ZWaveControllerClient.SerialIO
+namespace ZWaveControllerClient.Serial
 {
     /// <summary>
     /// See https://github.com/yepher/RaZBerry for serial IO notes.
@@ -20,7 +21,6 @@ namespace ZWaveControllerClient.SerialIO
         private SerialPortStream _serialPort;
         private ILogger _logger;
         private ZWaveClasses _zwClasses;
-        private ZWaveClassesXmlParser _zwaveXmlParser;
 		private readonly Queue<TaskCompletionSource<Frame>> _sendTasks = new Queue<TaskCompletionSource<Frame>>();
         private byte[] _dataReceivedBuffer = { };
         private const int RetryCount = 2;
@@ -29,15 +29,17 @@ namespace ZWaveControllerClient.SerialIO
 
         private List<ZWaveNode> _nodes = new List<ZWaveNode>();
 
-        public delegate void FrameReceivedEventHandler(object sender, FrameEventArgs e);
         public event FrameReceivedEventHandler FrameReceived;
 
         public IReadOnlyList<ZWaveNode> Nodes => _nodes;
 
+        public ZWaveClasses Classes => _zwClasses;
+        public ZWaveVersion Version { get; private set; }
         public byte ChipType { get; private set; }
         public byte ChipRevision { get; private set; }
         public byte SerialApiVersion { get; private set; }
         public bool IsSlaveApi { get; private set; }
+        public ControllerCapabilities Capabilities { get; private set; }
 
         private byte _sequenceNumber = 1;
         public byte SequenceNumber
@@ -53,13 +55,17 @@ namespace ZWaveControllerClient.SerialIO
             }
         }
 
+        public byte SucNodeId { get; private set; }
+        public byte[] HomeId { get; private set; }
+        public byte Id { get; private set; }
+
         private object _locker = new object();
 
-        public ZWaveSerialController(string portName, ILoggerFactory loggerFactory)
+        public ZWaveSerialController(string portName, ZWaveClasses zwaveClasses, ILoggerFactory loggerFactory)
         {
             _portName = portName;
+            _zwClasses = zwaveClasses;
             _logger = loggerFactory.CreateLogger<ZWaveSerialController>();
-            _zwaveXmlParser = new ZWaveClassesXmlParser();
 
             _serialPort = new SerialPortStream(_portName);
 
@@ -69,6 +75,13 @@ namespace ZWaveControllerClient.SerialIO
             _serialPort.BaudRate = 115200;
             _serialPort.Parity = Parity.None;
             _serialPort.StopBits = StopBits.One;
+
+            Version = new ZWaveVersion();
+        }
+
+        public ZWaveSerialController(string portName, Stream xmlCmdClassesStream, ILoggerFactory loggerFactory)
+            : this(portName, new ZWaveClassesXmlParser().Parse(xmlCmdClassesStream), loggerFactory)
+        {
         }
 
         private void _serialPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
@@ -200,12 +213,17 @@ namespace ZWaveControllerClient.SerialIO
             _serialPort.Flush();
         }
 
+        public Task<Frame> SendCommand(byte nodeId, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes)
+        {
+            return DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.SendData,
+               new byte[] { nodeId, (byte)(bytes.Length + 2), commandClass.Key, command.Key }
+               .Concat(bytes)
+               .Concat(new byte[] { (byte)(transmitOptions), SequenceNumber++ }).ToArray()));
+        }
+
         public Task<Frame> SendCommand(ZWaveNode node, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes)
         {
-             return DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.SendData, 
-                new byte[] { node.Id, (byte)(bytes.Length + 2), commandClass.Key, command.Key }
-                .Concat(bytes)
-                .Concat(new byte[] { (byte)(transmitOptions), SequenceNumber++ }).ToArray()));
+            return SendCommand(node.Id, commandClass, command, transmitOptions, bytes);
         }
 
         private void ProcessFrames(IEnumerable<Frame> responseFrames)
@@ -340,19 +358,86 @@ namespace ZWaveControllerClient.SerialIO
             Dispose(true);
         }
 
-        public async Task Initialize(Stream xmlCmdClassesStream)
+        public async Task FetchControllerInfo()
         {
-            _zwClasses = _zwaveXmlParser.Parse(xmlCmdClassesStream);
+            await FetchControllerVersion();
 
-            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetVersion));
+            await FetchSerialCapabilities();
 
-            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetControllerCapabilities));
+            await FetchControllerCapabilities();
 
-            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.MemoryGetId));
+            await FetchMemoryId();
 
-            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetSucNodeId));
+            await FetchSucNodeId();
+        }
 
-            var serialFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.DiscoveryNodes));
+        public async Task FetchSucNodeId()
+        {
+            var sucNodeIdFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetSucNodeId));
+            SucNodeId = sucNodeIdFrame.Payload[0];
+        }
+
+        public async Task FetchMemoryId()
+        {
+            var memoryIdFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.MemoryGetId));
+
+            var memoryIdBytes = memoryIdFrame.Payload;
+            if (memoryIdBytes.Length != 5)
+                return;
+
+            HomeId = memoryIdBytes.Take(4).ToArray();
+
+            Id = memoryIdBytes[4];
+        }
+
+        public async Task FetchControllerCapabilities()
+        {
+            var controllerCapsFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetControllerCapabilities));
+
+            Capabilities = (ControllerCapabilities)controllerCapsFrame.Payload[0];
+        }
+
+        public async Task FetchSerialCapabilities()
+        {
+            var serialCapabilitiesFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.SerialGetCapabilities));
+
+            var payload = serialCapabilitiesFrame.Payload;
+            if (payload.Length <= 8)
+                return;
+
+            Version.ZWaveApplicationVersion = payload[0];
+            Version.ZWaveApplicationSubVersion = payload[1];
+
+            // todo: process capability bitmask
+        }
+
+        public async Task FetchControllerVersion()
+        {
+            var versionFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetVersion));
+
+            var utf7 = new UTF7Encoding();
+            var bytes = versionFrame.Payload;
+            if (bytes.Length > 12)
+            {
+                Version.Version = utf7.GetString(bytes, 6, 6);
+                if (Version.Version.EndsWith("\0"))
+                {
+                    Version.Version = Version.Version.Remove(Version.Version.Length - 1, 1);
+                    var strArray = Version.Version.Replace("Z-Wave", "").Trim().Split('.');
+                    if (strArray.Length == 2 && byte.TryParse(strArray[0], out byte protocolVersion) && byte.TryParse(strArray[1], out byte protocolSubVersion))
+                    {
+                        Version.ZWaveProtocolVersion = protocolVersion;
+                        Version.ZWaveProtocolSubVersion = protocolSubVersion;
+                    }
+                }
+
+                Version.Library = (Libraries)bytes[12];
+            }
+        }
+
+        public async Task DiscoverNodes()
+        {
+            var serialFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.DiscoverNodes));
 
             _nodes = new List<ZWaveNode>();
 
@@ -368,37 +453,48 @@ namespace ZWaveControllerClient.SerialIO
             foreach (byte nodeId in nodeIds)
             {
                 _nodes.Add(new ZWaveNode { Id = nodeId });
-                var nodeInfoFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetNodeProtocolInfo, nodeId));
+            }
+        }
+        
+        public async Task FetchNodeInfo()
+        {
+            foreach (var node in Nodes)
+            {
+                await FetchNodeInfo(node);
+            }
+        }
 
-                var node = _nodes.Single(l => l.Id == nodeId);
-                node.ProtocolInfo.BasicType = _zwClasses.BasicDevices.SingleOrDefault(l => l.Key == nodeInfoFrame.Payload[3]);
-                node.ProtocolInfo.GenericType = _zwClasses.GenericDevices.SingleOrDefault(l => l.Key == nodeInfoFrame.Payload[4]);
-                node.ProtocolInfo.SpecificType = node.ProtocolInfo.GenericType?.SpecificDevices.SingleOrDefault(l => l.Key == nodeInfoFrame.Payload[5]);
+        public async Task FetchNodeInfo(ZWaveNode node)
+        {
+            var nodeInfoFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetNodeProtocolInfo, node.Id));
 
-                // wait until node info was received before querying the next node as the
-                // controller will cancel sends if another note info request is made.
-                var nodeUpdatedEvent = new TaskCompletionSource<int>();
+            node.ProtocolInfo.BasicType = _zwClasses.BasicDevices.SingleOrDefault(l => l.Key == nodeInfoFrame.Payload[3]);
+            node.ProtocolInfo.GenericType = _zwClasses.GenericDevices.SingleOrDefault(l => l.Key == nodeInfoFrame.Payload[4]);
+            node.ProtocolInfo.SpecificType = node.ProtocolInfo.GenericType?.SpecificDevices.SingleOrDefault(l => l.Key == nodeInfoFrame.Payload[5]);
 
-                FrameReceivedEventHandler appUpdateHandler = (sender, e) =>
+            // wait until node info was received before querying the next node as the
+            // controller will cancel sends if another note info request is made.
+            var nodeUpdatedEvent = new TaskCompletionSource<int>();
+
+            FrameReceivedEventHandler appUpdateHandler = (sender, e) =>
+            {
+                if (e.Frame.Function == ZWaveFunction.ApplicationUpdate)
                 {
-                    if (e.Frame.Function == ZWaveFunction.ApplicationUpdate)
-                    {
-                        nodeUpdatedEvent.SetResult(0);
-                    }
-                };
-
-                try
-                {
-                    FrameReceived += appUpdateHandler;
-
-                    await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.RequestNodeInfo, nodeId));
-
-                    await nodeUpdatedEvent.Task;
+                    nodeUpdatedEvent.SetResult(0);
                 }
-                finally
-                {
-                    FrameReceived -= appUpdateHandler;
-                }
+            };
+
+            try
+            {
+                FrameReceived += appUpdateHandler;
+
+                await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.RequestNodeInfo, node.Id));
+
+                await nodeUpdatedEvent.Task;
+            }
+            finally
+            {
+                FrameReceived -= appUpdateHandler;
             }
         }
 

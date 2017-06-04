@@ -11,7 +11,11 @@ namespace ZWaveControllerClient.Xml
     {
         public ZWaveClasses Parse(Stream xmlStream)
         {
-            var xmlDoc = XDocument.Load(xmlStream);
+            XDocument xmlDoc;
+            using (xmlStream)
+            {
+                xmlDoc = XDocument.Load(xmlStream);
+            }
 
             var zwClasses = new ZWaveClasses();
 

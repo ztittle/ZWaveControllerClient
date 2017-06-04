@@ -133,6 +133,13 @@ namespace ZWaveControllerClient.TestApp
 
             await zwController.FetchControllerInfo();
 
+            Console.WriteLine($"Node Id: {zwController.Id}");
+            Console.WriteLine($"Home Id: 0x{string.Concat(zwController.HomeId.Select(b => b.ToString("x2")))}");
+            Console.WriteLine($"SucNode Id: {zwController.SucNodeId}");
+            Console.WriteLine($"Capabilities: {zwController.Capabilities}");
+            Console.WriteLine($"Protocol Version: {zwController.Version}");
+            Console.WriteLine($"ZWave App Version: {zwController.Version.ApplicationVersion}.{zwController.Version.ApplicationSubVersion}");
+
             return (int)ExitCodes.Success;
         }
 

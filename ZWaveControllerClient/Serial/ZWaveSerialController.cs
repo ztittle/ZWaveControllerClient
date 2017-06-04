@@ -405,8 +405,8 @@ namespace ZWaveControllerClient.Serial
             if (payload.Length <= 8)
                 return;
 
-            Version.ZWaveApplicationVersion = payload[0];
-            Version.ZWaveApplicationSubVersion = payload[1];
+            Version.ApplicationVersion = payload[0];
+            Version.ApplicationSubVersion = payload[1];
 
             // todo: process capability bitmask
         }
@@ -419,15 +419,15 @@ namespace ZWaveControllerClient.Serial
             var bytes = versionFrame.Payload;
             if (bytes.Length > 12)
             {
-                Version.Version = utf7.GetString(bytes, 6, 6);
+                Version.Version = utf7.GetString(bytes, 0, 12);
                 if (Version.Version.EndsWith("\0"))
                 {
                     Version.Version = Version.Version.Remove(Version.Version.Length - 1, 1);
                     var strArray = Version.Version.Replace("Z-Wave", "").Trim().Split('.');
                     if (strArray.Length == 2 && byte.TryParse(strArray[0], out byte protocolVersion) && byte.TryParse(strArray[1], out byte protocolSubVersion))
                     {
-                        Version.ZWaveProtocolVersion = protocolVersion;
-                        Version.ZWaveProtocolSubVersion = protocolSubVersion;
+                        Version.ProtocolVersion = protocolVersion;
+                        Version.ProtocolSubVersion = protocolSubVersion;
                     }
                 }
 

@@ -28,6 +28,7 @@ namespace ZWaveControllerClient.TestApp
 
             app.Command("listnodes", config =>
             {
+                config.Description = "Lists all nodes in the network.";
                 config.OnExecute(() => ListNodesCommand());
 
                 config.HelpOption(HelpOptionTemplate);
@@ -35,6 +36,7 @@ namespace ZWaveControllerClient.TestApp
 
             app.Command("controllerinfo", config =>
             {
+                config.Description = "Prints controller information.";
                 config.OnExecute(() => ControllerInfoCommand());
 
                 config.HelpOption(HelpOptionTemplate);
@@ -42,6 +44,7 @@ namespace ZWaveControllerClient.TestApp
 
             app.Command("senddata", config =>
             {
+                config.Description = "Sends arbitrary data to a node.";
                 var nodeArg = config.Argument("nodeId", "The Node id to send the command.");
                 var cmdClassArg = config.Argument("cmdClass", "The Command Class supported by the node.");
                 var cmdArg = config.Argument("cmd", "The command associated with the Command Class.");
@@ -52,10 +55,26 @@ namespace ZWaveControllerClient.TestApp
                 config.HelpOption(HelpOptionTemplate);
             });
 
+            app.Command("addnode", config => 
+            {
+                config.Description = "Adds a new node to the network.";
+                config.OnExecute(() => AddNodeCommand());
+                config.HelpOption(HelpOptionTemplate);
+            });
+
             app.HelpOption(HelpOptionTemplate);
 
             app.Execute(args);
-        }        
+        }
+
+        private static async Task<int> AddNodeCommand()
+        {
+            Console.WriteLine($"Press the push button on the device.");
+            var zwController = CreateZWaveController();
+            var node = await zwController.AddNode();
+            Console.WriteLine($"Added {node}");
+            return (int)ExitCodes.Success;
+        }
 
         private static IZWaveController CreateZWaveController()
         {

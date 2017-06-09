@@ -22,6 +22,8 @@
         SendDataAbort = 0x16,
         RFPowerLevelSet = 0x17,
         SendDataMeta = 0x18,
+        SendDataMr = 0x19,
+        SendDataMetaMr = 0x1A,
         GetRandom = 0x1c,
         MemoryGetId = 0x20,
         MemoryGetByte = 0x21,

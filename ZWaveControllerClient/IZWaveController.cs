@@ -24,17 +24,20 @@ namespace ZWaveControllerClient
         byte Id { get; }
         byte[] HomeId { get; }
 
+        Task<ZWaveNode> AddNode(ZWaveMode mode = ZWaveMode.NodeAny);
+        Task<IReadOnlyCollection<ZWaveNode>> AddNodeNetworkWideInclusion(CancellationToken cancellationToken);
         void Connect();
         void Disconnect();
         Task DiscoverNodes();
         void DispatchFrame(Frame frame);
         void Dispatch(params byte[] bytes);
-        Task<Frame> DispatchFrameAsync(Frame frame);
-        Task<Frame> DispatchFrameAsync(Frame frame, CancellationToken cancellationToken);
+        Task<IReadOnlyCollection<Frame>> DispatchFrameAsync(Frame frame);
+        Task<IReadOnlyCollection<Frame>> DispatchFrameAsync(Frame frame, CancellationToken cancellationToken);
         Task FetchControllerInfo();
         Task FetchNodeInfo();
         Task FetchNodeInfo(ZWaveNode node);
-        Task<Frame> SendCommand(byte nodeId, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes);
-        Task<Frame> SendCommand(ZWaveNode node, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes);
+        Task RemoveNode();
+        Task<IReadOnlyCollection<Frame>> SendCommand(byte nodeId, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes);
+        Task<IReadOnlyCollection<Frame>> SendCommand(ZWaveNode node, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes);
     }
 }

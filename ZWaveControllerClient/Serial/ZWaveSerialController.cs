@@ -21,11 +21,11 @@ namespace ZWaveControllerClient.Serial
         private SerialPortStream _serialPort;
         private ILogger _logger;
         private ZWaveClasses _zwClasses;
-		private readonly Queue<TaskCompletionSource<Frame>> _sendTasks = new Queue<TaskCompletionSource<Frame>>();
+		private readonly Queue<TaskState> _sendTasks = new Queue<TaskState>();
         private byte[] _dataReceivedBuffer = { };
         private const int RetryCount = 2;
         private const int RetryDurationMs = 1100;
-        private const int RequestTimeout = 3000;
+        private const int RequestTimeoutMs = 3000;
 
         private List<ZWaveNode> _nodes = new List<ZWaveNode>();
 
@@ -40,6 +40,40 @@ namespace ZWaveControllerClient.Serial
         public byte SerialApiVersion { get; private set; }
         public bool IsSlaveApi { get; private set; }
         public ControllerCapabilities Capabilities { get; private set; }
+
+        private class TaskState
+        {
+            public TaskState()
+            {
+                Responses = new List<Frame>();
+            }
+
+            public Frame RequestFrame { get; set; }
+            public TaskCompletionSource<IReadOnlyCollection<Frame>> CompletionSource { get; set; }
+            public List<Frame> Responses { get; }
+            public bool ExpectsMultiResponse
+            {
+                get
+                {
+                    switch (RequestFrame.Function)
+                    {
+                        case ZWaveFunction.SendData:
+                        case ZWaveFunction.SendDataMeta:
+                        case ZWaveFunction.SendDataMetaMr:
+                        case ZWaveFunction.SendDataMr:
+                        case ZWaveFunction.SendDataMulti:
+                            return true;
+                        default:
+                            return false;
+                    }
+                }
+            }
+
+            public void SetCompleted()
+            {
+                CompletionSource.SetResult(Responses);
+            }
+        }
 
         private byte _sequenceNumber = 1;
         public byte SequenceNumber
@@ -93,7 +127,7 @@ namespace ZWaveControllerClient.Serial
 
                 while (_serialPort.Read(frameData, 0, frameDataLength) <= 0) {}
 
-                _logger.LogInformation(LogEvents.Receive, "Recv bytes: {bytes}", string.Concat(frameData.Select(b => b.ToString("x02"))));
+                _logger.LogTrace(LogEvents.Receive, "Recv bytes: {bytes}", string.Concat(frameData.Select(b => b.ToString("x02"))));
                 _dataReceivedBuffer = _dataReceivedBuffer.Concat(frameData).ToArray();
             }
 
@@ -147,50 +181,67 @@ namespace ZWaveControllerClient.Serial
 
         private static Frame Nack = new Frame(FrameType.Request, FrameHeader.NotAcknowledged);
 
-        public Task<Frame> DispatchFrameAsync(Frame frame)
+        public Task<IReadOnlyCollection<Frame>> DispatchFrameAsync(Frame frame)
         {
-            return DispatchFrameAsync(frame, new CancellationTokenSource(RequestTimeout).Token);
+            try
+            {
+                using (_requestCancellationTokenSource = new CancellationTokenSource())
+                {
+                    return DispatchFrameAsync(frame, _requestCancellationTokenSource.Token);
+                }
+            }
+            finally
+            {
+                _requestCancellationTokenSource = null;
+            }
         }
 
-        public async Task<Frame> DispatchFrameAsync(Frame frame, CancellationToken cancellationToken)
+        public async Task<IReadOnlyCollection<Frame>> DispatchFrameAsync(Frame frame, CancellationToken cancellationToken)
         {
-            var tcs = new TaskCompletionSource<Frame>(frame);
+            var tcs = new TaskCompletionSource<IReadOnlyCollection<Frame>>();
 
-            _sendTasks.Enqueue(tcs);
+            var taskState = new TaskState
+            {
+                RequestFrame = frame,
+                CompletionSource = tcs
+            };
 
-            _retriesLeft = RetryCount;
+            _sendTasks.Enqueue(taskState);
+            
+            ResetRequestRetryCount();
 
             cancellationToken.Register(state =>
             {
-                var tcsFromState = (TaskCompletionSource<Frame>)state;
+                var tcsFromState = (TaskState)state;
                 if (_sendTasks.Count > 0 && _sendTasks.Peek() == tcsFromState)
                 {
                     _retransTimer?.Dispose();
                     _retransTimer = null;
                     _sendTasks.Dequeue();
-                    tcsFromState.SetCanceled();
+                    tcsFromState.CompletionSource.SetCanceled();
                 }
-            }, tcs);
+            }, taskState);
 
             lock (_locker)
             {
                 if (_sendTasks.Count > 1)
                 {
-                    _sendTasks.Peek().Task.Wait();
+                    _sendTasks.Peek().CompletionSource.Task.Wait();
                 }
             }
 
             _retransTimer = new Timer(state =>
             {
+                var requestFrame = (Frame)state;
                 if (_retriesLeft-- == 0)
                 {
+                    _logger.LogWarning(LogEvents.RequestFrameRetry, "No retries left. Trying to set cancellation timer. Request frame {requestFrame}", requestFrame);
+                    _requestCancellationTokenSource?.CancelAfter(RequestTimeoutMs);
                     _retransTimer.Dispose();
                 }
                 else
                 {
-                    var requestFrame = (Frame)state;
-
-                    _logger.LogWarning(LogEvents.RequestFrameRetry, "Resending frame {requestFrame}, retries left: {_retriesLeft}.", requestFrame, _retriesLeft);
+                    _logger.LogWarning(LogEvents.RequestFrameRetry, "Resending frame {requestFrame}, retries left: {retriesLeft}.", requestFrame, _retriesLeft);
                     DispatchFrame(requestFrame);
                 }
             }, frame, RetryDurationMs, RetryDurationMs);
@@ -208,12 +259,12 @@ namespace ZWaveControllerClient.Serial
 
         public void Dispatch(params byte[] bytes)
         {
-            _logger.LogInformation(LogEvents.Dispatch, "Send bytes: {bytes}", string.Concat(bytes.Select(b => b.ToString("x02"))));
+            _logger.LogTrace(LogEvents.Dispatch, "Send bytes: {bytes}", string.Concat(bytes.Select(b => b.ToString("x02"))));
             _serialPort.Write(bytes, 0, bytes.Length);
             _serialPort.Flush();
         }
 
-        public Task<Frame> SendCommand(byte nodeId, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes)
+        public Task<IReadOnlyCollection<Frame>> SendCommand(byte nodeId, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes)
         {
             return DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.SendData,
                new byte[] { nodeId, (byte)(bytes.Length + 2), commandClass.Key, command.Key }
@@ -221,7 +272,7 @@ namespace ZWaveControllerClient.Serial
                .Concat(new byte[] { (byte)(transmitOptions), SequenceNumber++ }).ToArray()));
         }
 
-        public Task<Frame> SendCommand(ZWaveNode node, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes)
+        public Task<IReadOnlyCollection<Frame>> SendCommand(ZWaveNode node, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes)
         {
             return SendCommand(node.Id, commandClass, command, transmitOptions, bytes);
         }
@@ -230,14 +281,13 @@ namespace ZWaveControllerClient.Serial
         {
             try
             {
-                Frame solicitedResponseFrame = null;
-                TaskCompletionSource<Frame> lastSendTask = null;
+                TaskState lastSendTask = null;
                 Frame lastRequestFrame = null;
 
                 if (_sendTasks.Count > 0)
                 {
                     lastSendTask = _sendTasks.Peek();
-                    lastRequestFrame = (Frame)lastSendTask.Task.AsyncState;
+                    lastRequestFrame = lastSendTask.RequestFrame;
                 }
 
                 foreach (var responseFrame in responseFrames)
@@ -247,11 +297,21 @@ namespace ZWaveControllerClient.Serial
                         ProcessReceivedFrame(responseFrame);
 
                         if (lastRequestFrame?.Function == responseFrame.Function &&
-                            solicitedResponseFrame == null &&
-                            responseFrame.Type == FrameType.Response &&
                             responseFrame.IsChecksumValid)
                         {
-                            solicitedResponseFrame = responseFrame;
+                            lastSendTask.Responses.Add(responseFrame);
+                            
+                            if (lastSendTask.ExpectsMultiResponse)
+                            {
+                                if (responseFrame.Type == FrameType.Request)
+                                {
+                                    CompleteTask(lastSendTask);
+                                }
+                            }
+                            else
+                            {
+                                CompleteTask(lastSendTask);
+                            }
                         }
                     }
                     else
@@ -266,15 +326,6 @@ namespace ZWaveControllerClient.Serial
                         }
                     }
                 }
-
-                if (solicitedResponseFrame != null)
-                {
-                    _retransTimer?.Dispose();
-                    _retransTimer = null;
-                    _sendTasks.Dequeue();
-                    _logger.LogInformation(LogEvents.ResponseReceived, "Set result for {lastRequestFrame}", lastRequestFrame);
-                    lastSendTask.SetResult(solicitedResponseFrame);
-                }
             }
             catch (Exception e)
             {
@@ -282,8 +333,18 @@ namespace ZWaveControllerClient.Serial
             }
         }
 
+        private void CompleteTask(TaskState lastSendTask)
+        {
+            _retransTimer?.Dispose();
+            _retransTimer = null;
+            _sendTasks.Dequeue();
+            lastSendTask.SetCompleted();
+            _logger.LogInformation(LogEvents.ResponseReceived, "Set result for {lastRequestFrame}", lastSendTask.RequestFrame);
+        }
+
         private void ProcessReceivedFrame(Frame responseFrame)
         {
+            ResetRequestRetryCount();
             if (responseFrame.IsChecksumValid)
             {
                 DispatchFrame(Ack);
@@ -303,6 +364,12 @@ namespace ZWaveControllerClient.Serial
             }
 
             FrameReceived?.Invoke(this, new FrameEventArgs { Frame = responseFrame });
+        }
+
+        private void ResetRequestRetryCount()
+        {
+            _retriesLeft = RetryCount;
+            _retransTimer?.Change(RetryDurationMs, RetryDurationMs);
         }
 
         private void HandleApplicationUpdate(Frame responseFrame)
@@ -339,6 +406,7 @@ namespace ZWaveControllerClient.Serial
         private bool disposedValue = false; // To detect redundant calls
         private int _retriesLeft;
         private Timer _retransTimer;
+        private CancellationTokenSource _requestCancellationTokenSource;
 
         protected virtual void Dispose(bool disposing)
         {
@@ -374,14 +442,14 @@ namespace ZWaveControllerClient.Serial
         public async Task FetchSucNodeId()
         {
             var sucNodeIdFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetSucNodeId));
-            SucNodeId = sucNodeIdFrame.Payload[0];
+            SucNodeId = sucNodeIdFrame.First().Payload[0];
         }
 
         public async Task FetchMemoryId()
         {
             var memoryIdFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.MemoryGetId));
 
-            var memoryIdBytes = memoryIdFrame.Payload;
+            var memoryIdBytes = memoryIdFrame.First().Payload;
             if (memoryIdBytes.Length != 5)
                 return;
 
@@ -394,14 +462,14 @@ namespace ZWaveControllerClient.Serial
         {
             var controllerCapsFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetControllerCapabilities));
 
-            Capabilities = (ControllerCapabilities)controllerCapsFrame.Payload[0];
+            Capabilities = (ControllerCapabilities)controllerCapsFrame.First().Payload[0];
         }
 
         public async Task FetchSerialCapabilities()
         {
             var serialCapabilitiesFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.SerialGetCapabilities));
 
-            var payload = serialCapabilitiesFrame.Payload;
+            var payload = serialCapabilitiesFrame.First().Payload;
             if (payload.Length <= 8)
                 return;
 
@@ -416,7 +484,7 @@ namespace ZWaveControllerClient.Serial
             var versionFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetVersion));
 
             var utf7 = new UTF7Encoding();
-            var bytes = versionFrame.Payload;
+            var bytes = versionFrame.First().Payload;
             if (bytes.Length > 12)
             {
                 Version.Version = utf7.GetString(bytes, 0, 12);
@@ -441,7 +509,7 @@ namespace ZWaveControllerClient.Serial
 
             _nodes = new List<ZWaveNode>();
 
-            var frame = serialFrame;
+            var frame = serialFrame.First();
             SerialApiVersion = frame.Payload[0];
             IsSlaveApi = (frame.Payload[1] & 1) != 0;
             var bitmaskStartIdx = 3;
@@ -468,7 +536,7 @@ namespace ZWaveControllerClient.Serial
         {
             var nodeInfoFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetNodeProtocolInfo, node.Id));
 
-            var payload = nodeInfoFrame.Payload;
+            var payload = nodeInfoFrame.First().Payload;
             node.ProtocolInfo.Capability = payload[0];
             node.ProtocolInfo.Security = payload[1];
             node.ProtocolInfo.Reserved = payload[2];
@@ -502,6 +570,91 @@ namespace ZWaveControllerClient.Serial
             }
         }
 
+        public async Task<IReadOnlyCollection<ZWaveNode>> AddNodeNetworkWideInclusion(CancellationToken cancellationToken)
+        {
+            var addedNodes = new List<ZWaveNode>();
+            do
+            {
+                var addedNode = await AddNode(ZWaveMode.NodeOptionNetworkWide | ZWaveMode.NodeOptionHighPower);
+                addedNodes.Add(addedNode);
+            } while (cancellationToken.IsCancellationRequested == false);
+
+            return addedNodes.AsReadOnly();
+        }
+
+        public async Task<ZWaveNode> AddNode(ZWaveMode mode = ZWaveMode.NodeAny)
+        {
+            var addNodeFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.AddNodeToNetwork, (byte)mode, SequenceNumber++));
+
+            var nodeAddedEvent = new TaskCompletionSource<ZWaveNode>();
+
+            FrameReceivedEventHandler nodeAddedHandler = (sender, e) =>
+            {
+                if (e.Frame.Function == ZWaveFunction.AddNodeToNetwork)
+                {
+                    var responseFrame = e.Frame;
+                    var payload = responseFrame.Payload;
+                    var funcId = payload[0];
+
+                    if (payload.Length < 1)
+                    {
+                        return;
+                    }
+
+                    var status = (NodeStatus)payload[1];
+
+                    if (status == NodeStatus.AddingRemovingSlave)
+                    {
+                        var nodeId = payload[2];
+                        var dataLength = payload[3];
+
+                        if (dataLength > 0)
+                        {
+                            var basicKey = payload[4];
+                            var genericKey = payload[5];
+                            var specificKey = payload[6];
+                            var cmdClassKeys = payload.Skip(7).Take(dataLength - 7);
+
+                            var node = new ZWaveNode { Id = nodeId };
+
+                            node.ProtocolInfo.BasicType = _zwClasses.BasicDevices.SingleOrDefault(l => l.Key == basicKey);
+                            node.ProtocolInfo.GenericType = _zwClasses.GenericDevices.SingleOrDefault(l => l.Key == genericKey);
+                            node.ProtocolInfo.SpecificType = node.ProtocolInfo.GenericType?.SpecificDevices.SingleOrDefault(l => l.Key == specificKey);
+
+                            node.SupportedCommandClasses = cmdClassKeys.SelectMany(key => _zwClasses.CommandClasses.Where(c => c.Key == key)).ToList();
+
+                            _nodes.Add(node);
+
+                            _logger.LogInformation(LogEvents.NodeInfoReceived, "Added Node: {znode} - Command Classes: {cmdClasses}", node, string.Join(", ", node.SupportedCommandClasses.Select(cc => cc.ToString())));
+
+                            nodeAddedEvent.SetResult(node);
+                        }
+                    }
+                }
+            };
+
+            try
+            {
+                FrameReceived += nodeAddedHandler;
+
+                var addedNode = await nodeAddedEvent.Task;
+
+                await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.AddNodeToNetwork, (byte)ZWaveMode.NodeStop, SequenceNumber++));
+
+                return addedNode;
+            }
+            finally
+            {
+                FrameReceived -= nodeAddedHandler;
+            }
+        }
+
+        public async Task RemoveNode()
+        {
+            var mode = ZWaveMode.NodeAny;
+            await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.RemoveNodeFromNetwork, (byte)mode, SequenceNumber++));
+        }
+
         private static List<byte> GetNodeIdsFromBitmask(byte[] nodeIdBytes)
         {
             var nodeIds = new List<byte>();
@@ -512,8 +665,9 @@ namespace ZWaveControllerClient.Serial
                 {
                     if ((nodeIdBytes[i] & 1 << bit) > 0)
                     {
-                        nodeIds.Add(nodeId++);
+                        nodeIds.Add(nodeId);
                     }
+                    nodeId++;
                 }
             }
 

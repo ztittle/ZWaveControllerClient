@@ -135,7 +135,7 @@ namespace ZWaveControllerClient
 
         public override string ToString()
         {
-            return $"{Header} {Function}";
+            return $"{Type} {Header} {Function}";
         }
     }
 }

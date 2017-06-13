@@ -592,43 +592,15 @@ namespace ZWaveControllerClient.Serial
             {
                 if (e.Frame.Function == ZWaveFunction.AddNodeToNetwork)
                 {
-                    var responseFrame = e.Frame;
-                    var payload = responseFrame.Payload;
-                    var funcId = payload[0];
 
-                    if (payload.Length < 1)
+                    var node = ExtractNodeFromFrame(e.Frame);
+                    if (node != null)
                     {
-                        return;
-                    }
+                        _nodes.Add(node);
 
-                    var status = (NodeStatus)payload[1];
+                        _logger.LogInformation(LogEvents.NodeInfoReceived, "Added Node: {znode} - Command Classes: {cmdClasses}", node, string.Join(", ", node.SupportedCommandClasses.Select(cc => cc.ToString())));
 
-                    if (status == NodeStatus.AddingRemovingSlave)
-                    {
-                        var nodeId = payload[2];
-                        var dataLength = payload[3];
-
-                        if (dataLength > 0)
-                        {
-                            var basicKey = payload[4];
-                            var genericKey = payload[5];
-                            var specificKey = payload[6];
-                            var cmdClassKeys = payload.Skip(7).Take(dataLength - 7);
-
-                            var node = new ZWaveNode { Id = nodeId };
-
-                            node.ProtocolInfo.BasicType = _zwClasses.BasicDevices.SingleOrDefault(l => l.Key == basicKey);
-                            node.ProtocolInfo.GenericType = _zwClasses.GenericDevices.SingleOrDefault(l => l.Key == genericKey);
-                            node.ProtocolInfo.SpecificType = node.ProtocolInfo.GenericType?.SpecificDevices.SingleOrDefault(l => l.Key == specificKey);
-
-                            node.SupportedCommandClasses = cmdClassKeys.SelectMany(key => _zwClasses.CommandClasses.Where(c => c.Key == key)).ToList();
-
-                            _nodes.Add(node);
-
-                            _logger.LogInformation(LogEvents.NodeInfoReceived, "Added Node: {znode} - Command Classes: {cmdClasses}", node, string.Join(", ", node.SupportedCommandClasses.Select(cc => cc.ToString())));
-
-                            nodeAddedEvent.SetResult(node);
-                        }
+                        nodeAddedEvent.SetResult(node);
                     }
                 }
             };
@@ -649,10 +621,83 @@ namespace ZWaveControllerClient.Serial
             }
         }
 
-        public async Task RemoveNode()
+        public async Task<ZWaveNode> RemoveNode()
         {
             var mode = ZWaveMode.NodeAny;
             await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.RemoveNodeFromNetwork, (byte)mode, SequenceNumber++));
+
+            var nodeRemovedEvent = new TaskCompletionSource<ZWaveNode>();
+
+            FrameReceivedEventHandler nodeRemovedHandler = (sender, e) =>
+            {
+                if (e.Frame.Function == ZWaveFunction.RemoveNodeFromNetwork)
+                {
+                    var node = ExtractNodeFromFrame(e.Frame);
+
+                    if (node != null)
+                    {
+                        _nodes.RemoveAll(n => n.Id == node.Id);
+
+                        _logger.LogInformation(LogEvents.NodeInfoReceived, "Removed Node: {znode} - Command Classes: {cmdClasses}", node, string.Join(", ", node.SupportedCommandClasses.Select(cc => cc.ToString())));
+
+                        nodeRemovedEvent.SetResult(node);
+                    }
+                }
+            };
+
+            try
+            {
+                FrameReceived += nodeRemovedHandler;
+
+                var addedNode = await nodeRemovedEvent.Task;
+
+                await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.RemoveNodeFromNetwork, (byte)ZWaveMode.NodeStop, SequenceNumber++));
+
+                return addedNode;
+            }
+            finally
+            {
+                FrameReceived -= nodeRemovedHandler;
+            }
+}
+
+        private ZWaveNode ExtractNodeFromFrame(Frame frame)
+        {
+            var payload = frame.Payload;
+            var funcId = payload[0];
+
+            if (payload.Length < 1)
+            {
+                return null;
+            }
+
+            var status = (NodeStatus)payload[1];
+
+            if (status == NodeStatus.AddingRemovingSlave)
+            {
+                var nodeId = payload[2];
+                var dataLength = payload[3];
+
+                if (dataLength > 0)
+                {
+                    var basicKey = payload[4];
+                    var genericKey = payload[5];
+                    var specificKey = payload[6];
+                    var cmdClassKeys = payload.Skip(7).Take(dataLength - 7);
+
+                    var node = new ZWaveNode { Id = nodeId };
+
+                    node.ProtocolInfo.BasicType = _zwClasses.BasicDevices.SingleOrDefault(l => l.Key == basicKey);
+                    node.ProtocolInfo.GenericType = _zwClasses.GenericDevices.SingleOrDefault(l => l.Key == genericKey);
+                    node.ProtocolInfo.SpecificType = node.ProtocolInfo.GenericType?.SpecificDevices.SingleOrDefault(l => l.Key == specificKey);
+
+                    node.SupportedCommandClasses = cmdClassKeys.SelectMany(key => _zwClasses.CommandClasses.Where(c => c.Key == key)).ToList();
+
+                    return node;
+                }
+            }
+
+            return null;
         }
 
         private static List<byte> GetNodeIdsFromBitmask(byte[] nodeIdBytes)

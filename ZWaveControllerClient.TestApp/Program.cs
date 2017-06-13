@@ -62,9 +62,25 @@ namespace ZWaveControllerClient.TestApp
                 config.HelpOption(HelpOptionTemplate);
             });
 
+            app.Command("removenode", config =>
+            {
+                config.Description = "Removes a new node from the network.";
+                config.OnExecute(() => RemoveNodeCommand());
+                config.HelpOption(HelpOptionTemplate);
+            });
+
             app.HelpOption(HelpOptionTemplate);
 
             app.Execute(args);
+        }
+
+        private static async Task<int> RemoveNodeCommand()
+        {
+            Console.WriteLine($"Press the push button on the device.");
+            var zwController = CreateZWaveController();
+            var node = await zwController.RemoveNode();
+            Console.WriteLine($"Removed {node}");
+            return (int)ExitCodes.Success;
         }
 
         private static async Task<int> AddNodeCommand()

@@ -36,7 +36,7 @@ namespace ZWaveControllerClient
         Task FetchControllerInfo();
         Task FetchNodeInfo();
         Task FetchNodeInfo(ZWaveNode node);
-        Task RemoveNode();
+        Task<ZWaveNode> RemoveNode();
         Task<IReadOnlyCollection<Frame>> SendCommand(byte nodeId, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes);
         Task<IReadOnlyCollection<Frame>> SendCommand(ZWaveNode node, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes);
     }

@@ -210,45 +210,46 @@ namespace ZWaveControllerClient.Serial
             
             ResetRequestRetryCount();
 
-            cancellationToken.Register(state =>
+            using (cancellationToken.Register(state =>
+             {
+                 var tcsFromState = (TaskState)state;
+                 if (_sendTasks.Count > 0 && _sendTasks.Peek() == tcsFromState)
+                 {
+                     _retransTimer?.Dispose();
+                     _retransTimer = null;
+                     _sendTasks.Dequeue();
+                     tcsFromState.CompletionSource.SetCanceled();
+                 }
+             }, taskState))
             {
-                var tcsFromState = (TaskState)state;
-                if (_sendTasks.Count > 0 && _sendTasks.Peek() == tcsFromState)
+                lock (_locker)
                 {
-                    _retransTimer?.Dispose();
-                    _retransTimer = null;
-                    _sendTasks.Dequeue();
-                    tcsFromState.CompletionSource.SetCanceled();
+                    if (_sendTasks.Count > 1)
+                    {
+                        _sendTasks.Peek().CompletionSource.Task.Wait();
+                    }
                 }
-            }, taskState);
 
-            lock (_locker)
-            {
-                if (_sendTasks.Count > 1)
+                _retransTimer = new Timer(state =>
                 {
-                    _sendTasks.Peek().CompletionSource.Task.Wait();
-                }
-            }
+                    var requestFrame = (Frame)state;
+                    if (_retriesLeft-- == 0)
+                    {
+                        _logger.LogWarning(LogEvents.RequestFrameRetry, "No retries left. Trying to set cancellation timer. Request frame {requestFrame}", requestFrame);
+                        _requestCancellationTokenSource?.CancelAfter(RequestTimeoutMs);
+                        _retransTimer.Dispose();
+                    }
+                    else
+                    {
+                        _logger.LogWarning(LogEvents.RequestFrameRetry, "Resending frame {requestFrame}, retries left: {retriesLeft}.", requestFrame, _retriesLeft);
+                        DispatchFrame(requestFrame);
+                    }
+                }, frame, RetryDurationMs, RetryDurationMs);
 
-            _retransTimer = new Timer(state =>
-            {
-                var requestFrame = (Frame)state;
-                if (_retriesLeft-- == 0)
-                {
-                    _logger.LogWarning(LogEvents.RequestFrameRetry, "No retries left. Trying to set cancellation timer. Request frame {requestFrame}", requestFrame);
-                    _requestCancellationTokenSource?.CancelAfter(RequestTimeoutMs);
-                    _retransTimer.Dispose();
-                }
-                else
-                {
-                    _logger.LogWarning(LogEvents.RequestFrameRetry, "Resending frame {requestFrame}, retries left: {retriesLeft}.", requestFrame, _retriesLeft);
-                    DispatchFrame(requestFrame);
-                }
-            }, frame, RetryDurationMs, RetryDurationMs);
+                DispatchFrame(frame);
 
-            DispatchFrame(frame);
-            
-            return await tcs.Task;
+                return await tcs.Task;
+            }            
         }
 
         public void DispatchFrame(Frame frame)
@@ -575,91 +576,101 @@ namespace ZWaveControllerClient.Serial
             var addedNodes = new List<ZWaveNode>();
             do
             {
-                var addedNode = await AddNode(ZWaveMode.NodeOptionNetworkWide | ZWaveMode.NodeOptionHighPower);
-                addedNodes.Add(addedNode);
+                try
+                {
+                    var addedNode = await AddNode(cancellationToken, ZWaveMode.NodeOptionNetworkWide | ZWaveMode.NodeOptionHighPower);
+                    addedNodes.Add(addedNode);
+                }
+                catch(OperationCanceledException)
+                {
+                }
             } while (cancellationToken.IsCancellationRequested == false);
 
             return addedNodes.AsReadOnly();
         }
 
-        public async Task<ZWaveNode> AddNode(ZWaveMode mode = ZWaveMode.NodeAny)
+        public async Task<ZWaveNode> AddNode(CancellationToken cancellationToken, ZWaveMode mode = ZWaveMode.NodeAny)
         {
             var addNodeFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.AddNodeToNetwork, (byte)mode, SequenceNumber++));
 
             var nodeAddedEvent = new TaskCompletionSource<ZWaveNode>();
-
-            FrameReceivedEventHandler nodeAddedHandler = (sender, e) =>
+            using (cancellationToken.Register(nodeAddedEvent.SetCanceled))
             {
-                if (e.Frame.Function == ZWaveFunction.AddNodeToNetwork)
+                FrameReceivedEventHandler nodeAddedHandler = (sender, e) =>
                 {
-
-                    var node = ExtractNodeFromFrame(e.Frame);
-                    if (node != null)
+                    if (e.Frame.Function == ZWaveFunction.AddNodeToNetwork)
                     {
-                        _nodes.Add(node);
 
-                        _logger.LogInformation(LogEvents.NodeInfoReceived, "Added Node: {znode} - Command Classes: {cmdClasses}", node, string.Join(", ", node.SupportedCommandClasses.Select(cc => cc.ToString())));
+                        var node = ExtractNodeFromFrame(e.Frame);
+                        if (node != null)
+                        {
+                            _nodes.Add(node);
 
-                        nodeAddedEvent.SetResult(node);
+                            _logger.LogInformation(LogEvents.NodeInfoReceived, "Added Node: {znode} - Command Classes: {cmdClasses}", node, string.Join(", ", node.SupportedCommandClasses.Select(cc => cc.ToString())));
+
+                            nodeAddedEvent.SetResult(node);
+                        }
                     }
+                };
+
+                try
+                {
+                    FrameReceived += nodeAddedHandler;
+
+                    var addedNode = await nodeAddedEvent.Task;
+
+                    await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.AddNodeToNetwork, (byte)ZWaveMode.NodeStop, SequenceNumber++));
+
+                    return addedNode;
                 }
-            };
-
-            try
-            {
-                FrameReceived += nodeAddedHandler;
-
-                var addedNode = await nodeAddedEvent.Task;
-
-                await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.AddNodeToNetwork, (byte)ZWaveMode.NodeStop, SequenceNumber++));
-
-                return addedNode;
-            }
-            finally
-            {
-                FrameReceived -= nodeAddedHandler;
-            }
+                finally
+                {
+                    FrameReceived -= nodeAddedHandler;
+                }
+            }                
         }
 
-        public async Task<ZWaveNode> RemoveNode()
+        public async Task<ZWaveNode> RemoveNode(CancellationToken cancellationToken)
         {
             var mode = ZWaveMode.NodeAny;
             await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.RemoveNodeFromNetwork, (byte)mode, SequenceNumber++));
 
             var nodeRemovedEvent = new TaskCompletionSource<ZWaveNode>();
-
-            FrameReceivedEventHandler nodeRemovedHandler = (sender, e) =>
+            using (cancellationToken.Register(nodeRemovedEvent.SetCanceled))
             {
-                if (e.Frame.Function == ZWaveFunction.RemoveNodeFromNetwork)
+                FrameReceivedEventHandler nodeRemovedHandler = (sender, e) =>
                 {
-                    var node = ExtractNodeFromFrame(e.Frame);
-
-                    if (node != null)
+                    if (e.Frame.Function == ZWaveFunction.RemoveNodeFromNetwork)
                     {
-                        _nodes.RemoveAll(n => n.Id == node.Id);
+                        var node = ExtractNodeFromFrame(e.Frame);
 
-                        _logger.LogInformation(LogEvents.NodeInfoReceived, "Removed Node: {znode} - Command Classes: {cmdClasses}", node, string.Join(", ", node.SupportedCommandClasses.Select(cc => cc.ToString())));
+                        if (node != null)
+                        {
+                            _nodes.RemoveAll(n => n.Id == node.Id);
 
-                        nodeRemovedEvent.SetResult(node);
+                            _logger.LogInformation(LogEvents.NodeInfoReceived, "Removed Node: {znode} - Command Classes: {cmdClasses}", node, string.Join(", ", node.SupportedCommandClasses.Select(cc => cc.ToString())));
+
+                            nodeRemovedEvent.SetResult(node);
+                        }
                     }
+                };
+
+                try
+                {
+                    FrameReceived += nodeRemovedHandler;
+
+                    var addedNode = await nodeRemovedEvent.Task;
+
+                    await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.RemoveNodeFromNetwork, (byte)ZWaveMode.NodeStop, SequenceNumber++));
+
+                    return addedNode;
+                }
+                finally
+                {
+                    FrameReceived -= nodeRemovedHandler;
                 }
             };
-
-            try
-            {
-                FrameReceived += nodeRemovedHandler;
-
-                var addedNode = await nodeRemovedEvent.Task;
-
-                await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.RemoveNodeFromNetwork, (byte)ZWaveMode.NodeStop, SequenceNumber++));
-
-                return addedNode;
-            }
-            finally
-            {
-                FrameReceived -= nodeRemovedHandler;
-            }
-}
+        }
 
         private ZWaveNode ExtractNodeFromFrame(Frame frame)
         {

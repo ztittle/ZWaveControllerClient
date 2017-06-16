@@ -24,7 +24,7 @@ namespace ZWaveControllerClient
         byte Id { get; }
         byte[] HomeId { get; }
 
-        Task<ZWaveNode> AddNode(ZWaveMode mode = ZWaveMode.NodeAny);
+        Task<ZWaveNode> AddNode(CancellationToken cancellationToken, ZWaveMode mode = ZWaveMode.NodeAny);
         Task<IReadOnlyCollection<ZWaveNode>> AddNodeNetworkWideInclusion(CancellationToken cancellationToken);
         void Connect();
         void Disconnect();
@@ -36,7 +36,7 @@ namespace ZWaveControllerClient
         Task FetchControllerInfo();
         Task FetchNodeInfo();
         Task FetchNodeInfo(ZWaveNode node);
-        Task<ZWaveNode> RemoveNode();
+        Task<ZWaveNode> RemoveNode(CancellationToken cancellationToken);
         Task<IReadOnlyCollection<Frame>> SendCommand(byte nodeId, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes);
         Task<IReadOnlyCollection<Frame>> SendCommand(ZWaveNode node, CommandClass commandClass, Command command, TransmitOptions transmitOptions, params byte[] bytes);
     }

@@ -198,6 +198,7 @@ namespace ZWaveControllerClient.TestApp
                         var recvCmd = cmdClass.Commands.First(l => l.Key == e.Frame.Payload[4]);
 
                         Console.WriteLine($"node: {recvNodeId} len: {e.Frame.Payload[2]:x2} cmdClass: {cmdClass} cmd: {cmd} val: {e.Frame.Payload[5]}");
+                        zwController.FrameReceived -= ZwController_FrameReceived;
                         break;
                 }
             }

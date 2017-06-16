@@ -1,0 +1,1 @@
+dotnet pack ZWaveControllerClient -c Release --include-symbols

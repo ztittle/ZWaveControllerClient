@@ -220,7 +220,7 @@ namespace ZWaveControllerClient.TestApp
         {
             var zwController = CreateZWaveController(portArg.Value);
 
-            await zwController.FetchControllerInfo();
+            await zwController.FetchControllerInfo(CancellationToken.None);
 
             Console.WriteLine($"Node Id: {zwController.Id}");
             Console.WriteLine($"Home Id: 0x{string.Concat(zwController.HomeId.Select(b => b.ToString("x2")))}");
@@ -236,8 +236,19 @@ namespace ZWaveControllerClient.TestApp
         {
             var zwController = CreateZWaveController(portArg.Value);
 
-            await zwController.DiscoverNodes();
-            await zwController.FetchNodeInfo();
+            var timeout = TimeSpan.FromSeconds(20);
+            var cts = new CancellationTokenSource(timeout);
+            try
+            {
+
+                await zwController.DiscoverNodes(cts.Token);
+                await zwController.FetchNodeInfo(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                Console.WriteLine($"Unable to fetch nodes after {timeout} seconds.");
+                return (int)ExitCodes.Failure;
+            }
 
             foreach (var node in zwController.Nodes)
             {

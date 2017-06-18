@@ -187,7 +187,7 @@ namespace ZWaveControllerClient.Serial
             {
                 using (_requestCancellationTokenSource = new CancellationTokenSource())
                 {
-                    return DispatchFrameAsync(frame, _requestCancellationTokenSource.Token);
+                    return DispatchFrameAsync(_requestCancellationTokenSource.Token, frame);
                 }
             }
             finally
@@ -196,7 +196,7 @@ namespace ZWaveControllerClient.Serial
             }
         }
 
-        public async Task<IReadOnlyCollection<Frame>> DispatchFrameAsync(Frame frame, CancellationToken cancellationToken)
+        public async Task<IReadOnlyCollection<Frame>> DispatchFrameAsync(CancellationToken cancellationToken, Frame frame)
         {
             var tcs = new TaskCompletionSource<IReadOnlyCollection<Frame>>();
 
@@ -427,28 +427,28 @@ namespace ZWaveControllerClient.Serial
             Dispose(true);
         }
 
-        public async Task FetchControllerInfo()
+        public async Task FetchControllerInfo(CancellationToken cancellationToken)
         {
-            await FetchControllerVersion();
+            await FetchControllerVersion(cancellationToken);
 
-            await FetchSerialCapabilities();
+            await FetchSerialCapabilities(cancellationToken);
 
-            await FetchControllerCapabilities();
+            await FetchControllerCapabilities(cancellationToken);
 
-            await FetchMemoryId();
+            await FetchMemoryId(cancellationToken);
 
-            await FetchSucNodeId();
+            await FetchSucNodeId(cancellationToken);
         }
 
-        public async Task FetchSucNodeId()
+        public async Task FetchSucNodeId(CancellationToken cancellationToken)
         {
-            var sucNodeIdFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetSucNodeId));
+            var sucNodeIdFrame = await DispatchFrameAsync(cancellationToken, new Frame(FrameType.Request, ZWaveFunction.GetSucNodeId));
             SucNodeId = sucNodeIdFrame.First().Payload[0];
         }
 
-        public async Task FetchMemoryId()
+        public async Task FetchMemoryId(CancellationToken cancellationToken)
         {
-            var memoryIdFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.MemoryGetId));
+            var memoryIdFrame = await DispatchFrameAsync(cancellationToken, new Frame(FrameType.Request, ZWaveFunction.MemoryGetId));
 
             var memoryIdBytes = memoryIdFrame.First().Payload;
             if (memoryIdBytes.Length != 5)
@@ -459,16 +459,16 @@ namespace ZWaveControllerClient.Serial
             Id = memoryIdBytes[4];
         }
 
-        public async Task FetchControllerCapabilities()
+        public async Task FetchControllerCapabilities(CancellationToken cancellationToken)
         {
-            var controllerCapsFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetControllerCapabilities));
+            var controllerCapsFrame = await DispatchFrameAsync(cancellationToken, new Frame(FrameType.Request, ZWaveFunction.GetControllerCapabilities));
 
             Capabilities = (ControllerCapabilities)controllerCapsFrame.First().Payload[0];
         }
 
-        public async Task FetchSerialCapabilities()
+        public async Task FetchSerialCapabilities(CancellationToken cancellationToken)
         {
-            var serialCapabilitiesFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.SerialGetCapabilities));
+            var serialCapabilitiesFrame = await DispatchFrameAsync(cancellationToken, new Frame(FrameType.Request, ZWaveFunction.SerialGetCapabilities));
 
             var payload = serialCapabilitiesFrame.First().Payload;
             if (payload.Length <= 8)
@@ -480,9 +480,9 @@ namespace ZWaveControllerClient.Serial
             // todo: process capability bitmask
         }
 
-        public async Task FetchControllerVersion()
+        public async Task FetchControllerVersion(CancellationToken cancellationToken)
         {
-            var versionFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetVersion));
+            var versionFrame = await DispatchFrameAsync(cancellationToken, new Frame(FrameType.Request, ZWaveFunction.GetVersion));
 
             var utf7 = new UTF7Encoding();
             var bytes = versionFrame.First().Payload;
@@ -504,9 +504,9 @@ namespace ZWaveControllerClient.Serial
             }
         }
 
-        public async Task DiscoverNodes()
+        public async Task DiscoverNodes(CancellationToken cancellationToken)
         {
-            var serialFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.DiscoverNodes));
+            var serialFrame = await DispatchFrameAsync(cancellationToken, new Frame(FrameType.Request, ZWaveFunction.DiscoverNodes));
 
             _nodes = new List<ZWaveNode>();
 
@@ -525,15 +525,15 @@ namespace ZWaveControllerClient.Serial
             }
         }
         
-        public async Task FetchNodeInfo()
+        public async Task FetchNodeInfo(CancellationToken cancellationToken)
         {
             foreach (var node in Nodes)
             {
-                await FetchNodeInfo(node);
+                await FetchNodeInfo(cancellationToken, node);
             }
         }
 
-        public async Task FetchNodeInfo(ZWaveNode node)
+        public async Task FetchNodeInfo(CancellationToken cancellationToken, ZWaveNode node)
         {
             var nodeInfoFrame = await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.GetNodeProtocolInfo, node.Id));
 
@@ -549,25 +549,28 @@ namespace ZWaveControllerClient.Serial
             // controller will cancel sends if another note info request is made.
             var nodeUpdatedEvent = new TaskCompletionSource<int>();
 
-            FrameReceivedEventHandler appUpdateHandler = (sender, e) =>
+            using (cancellationToken.Register(nodeUpdatedEvent.SetCanceled))
             {
-                if (e.Frame.Function == ZWaveFunction.ApplicationUpdate)
+                FrameReceivedEventHandler appUpdateHandler = (sender, e) =>
                 {
-                    nodeUpdatedEvent.SetResult(0);
+                    if (e.Frame.Function == ZWaveFunction.ApplicationUpdate)
+                    {
+                        nodeUpdatedEvent.SetResult(0);
+                    }
+                };
+
+                try
+                {
+                    FrameReceived += appUpdateHandler;
+
+                    await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.RequestNodeInfo, node.Id));
+
+                    await nodeUpdatedEvent.Task;
                 }
-            };
-
-            try
-            {
-                FrameReceived += appUpdateHandler;
-
-                await DispatchFrameAsync(new Frame(FrameType.Request, ZWaveFunction.RequestNodeInfo, node.Id));
-
-                await nodeUpdatedEvent.Task;
-            }
-            finally
-            {
-                FrameReceived -= appUpdateHandler;
+                finally
+                {
+                    FrameReceived -= appUpdateHandler;
+                }
             }
         }
 
